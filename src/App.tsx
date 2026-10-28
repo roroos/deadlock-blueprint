@@ -17,6 +17,7 @@ import {
   Terminal,
   Unlock,
   UserPlus,
+  TrendingUp,
   X,
   Zap,
 } from 'lucide-react';
@@ -53,6 +54,7 @@ import {
   isInventoryFull,
   withLockedFirst,
 } from './services/recommendations';
+import { KEY_SPIKE, investmentProgress, nudgeTowardKeySpike, reachesKeySpike } from './services/investments';
 import {
   isMatchLogEnabled,
   logEvent,
@@ -495,17 +497,14 @@ export function App() {
   // Owned items plus the components they consumed (owning Greater Expansion means Mystic Expansion is done)
   const effectiveOwned = useMemo(() => effectiveOwnedSet(ownedItems), [ownedItems]);
 
-  const rawNextToBuyQueue = useMemo(
-    () =>
-      getNextPurchases(
-        purchaseOrder,
-        ownedItems,
-        inventoryStatus,
-        sellCandidates,
-        (itemId) => getHeroItemStat(myHeroId, itemId)?.buyTimeS
-      ),
-    [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId]
-  );
+  // Souls invested in the build's main category, and the next milestone high-rank players reach (services/investments.ts)
+  const investment = useMemo(() => investmentProgress(activeBuild, ownedItems), [activeBuild, ownedItems]);
+
+  const rawNextToBuyQueue = useMemo(() => {
+    const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
+    const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
+    return nudgeTowardKeySpike(queue, ownedItems, investment.category, (itemId) => buyTimeS(itemId) || undefined);
+  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investment.category]);
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
@@ -1030,6 +1029,59 @@ export function App() {
     );
   };
 
+  /** "Reaches the 4,800 spike" under the item that takes the main category to the key investment bonus. */
+  const renderSpikeHint = (itemId: string, compact = false) => {
+    if (!reachesKeySpike(itemId, ownedItems, investment.category)) return null;
+    return (
+      <div
+        className={`flex items-center gap-1.5 rounded-lg border font-bold bg-amber-500/15 border-amber-400/40 text-amber-200 ${
+          compact ? 'px-1.5 py-0.5' : 'px-2 py-1'
+        } text-small`}
+        title={t('invest.spikeTitle')}
+      >
+        <TrendingUp className="w-3 h-3 shrink-0" />
+        <span>{t('invest.spike', formatNumber(KEY_SPIKE))}</span>
+      </div>
+    );
+  };
+
+  /** Main-category investment: souls owned, the next milestone and when high-rank players reach it. */
+  const renderInvestment = (compact = false) => {
+    const { category, souls, next } = investment;
+    const categoryName = t(`category.${category}`);
+    if (!next) {
+      return (
+        <p className="text-small text-slate-400" title={t('invest.title')}>
+          {t('invest.done', categoryName, formatNumber(souls))}
+        </p>
+      );
+    }
+    const behind = clockS !== undefined && clockS > next.minute * 60;
+    const fill = Math.min(100, (souls / next.souls) * 100);
+    return (
+      <div className="space-y-1" title={t('invest.title')}>
+        <div className="flex items-baseline justify-between gap-2 flex-wrap text-small">
+          <span className="font-bold text-slate-200">
+            {t('invest.progress', categoryName, formatNumber(souls), formatNumber(next.souls))}
+            {next.souls === KEY_SPIKE && <span className="text-amber-300"> · {t('invest.keySpike')}</span>}
+          </span>
+          {!compact && (
+            <span className={behind ? 'font-bold text-amber-300' : 'text-slate-400'}>
+              {t('invest.pace', String(Math.round(next.minute)))}
+              {behind && ` · ${t('invest.behind')}`}
+            </span>
+          )}
+        </div>
+        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+          <div
+            className={`h-full rounded-full ${behind ? 'bg-amber-400' : 'bg-teal-400'}`}
+            style={{ width: `${fill}%` }}
+          />
+        </div>
+      </div>
+    );
+  };
+
   const stanceLabel = (alert: MatchupAlert) =>
     alert.isFed ? t('stance.fed') : alert.stance ? t(STANCE_KEYS[alert.stance]) : null;
   const stanceStyle = (alert: MatchupAlert) => STANCE_STYLE[alert.isFed ? 'fed' : alert.stance ?? 'even'];
@@ -1363,6 +1415,7 @@ export function App() {
                 <span className="text-small font-extrabold uppercase tracking-wider text-emerald-300 flex items-center gap-1">
                   <ShoppingCart className="w-3 h-3 text-emerald-400" /> {t('overlay.buyNow')}
                 </span>
+                {renderInvestment(true)}
                 {nextToBuyQueue.slice(0, 3).map((entry, idx) => {
                   const canAfford = currentSouls !== null && currentSouls >= entry.item.cost;
                   const shortName = entry.item.name.split('(')[0].trim();
@@ -1390,6 +1443,7 @@ export function App() {
                           <ShopTabMarker category={entry.item.category} />
                           {renderSlotPlan(entry.item.id, true)}
                           {renderImbueHint(entry.item.id, true)}
+                          {renderSpikeHint(entry.item.id, true)}
                         </div>
                       </div>
                       <div className="text-right shrink-0">
@@ -1829,6 +1883,8 @@ export function App() {
                       </div>
                     </div>
 
+                    <div className="basis-full">{renderInvestment()}</div>
+
                     {currentSouls !== null && (
                       <div className="px-3 py-1 rounded-xl bg-teal-950/80 border border-teal-400/50 text-body font-extrabold text-teal-200">
                         {t('souls.detected', formatNumber(currentSouls))}
@@ -1908,6 +1964,7 @@ export function App() {
 
                             {renderSlotPlan(item.id)}
                             {renderImbueHint(item.id)}
+                            {renderSpikeHint(item.id)}
 
                             {/* Why this item: meta statistics of this hero */}
                             {why && (

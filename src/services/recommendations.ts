@@ -23,6 +23,7 @@ export interface QueueEntry {
   reason: string;
   phase?: 'early' | 'mid' | 'late' | 'situational'; // phase of the active build that holds the item
   role?: CounterRole; // set on a counter that is not part of the build
+  group?: string; // author's group of a custom build (services/customBuild.ts)
 }
 
 export type SlotPlan =
@@ -74,7 +75,7 @@ const isTeamReason = (reason: string) => reason.startsWith('[TEAM]');
  * A counter only goes into the purchase queue when the threat is real: it answers the enemy in my lane, or
  * at least two different enemies (one team enemy alone is not worth bending the build for).
  */
-const isStrongCounter = (r: PriorityItem) => r.urgency === 'Critique (En Face / Lane)' || r.reasons.length >= 2;
+export const isStrongCounter = (r: PriorityItem) => r.urgency === 'Critique (En Face / Lane)' || r.reasons.length >= 2;
 
 /**
  * A lane threat worth a counter: a lane enemy to avoid (my real win rate against it), a lane enemy marked fed, or a

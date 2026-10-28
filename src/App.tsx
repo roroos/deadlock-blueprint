@@ -29,10 +29,12 @@ import {
   formatPoints,
   generateTacticalPlan,
   getAbilityIcon,
+  getHeroIdByApiHeroId,
   getHeroImbueTarget,
   getHeroItemStat,
   getHeroMetaInfo,
   getHeroesDb,
+  getItemIdByApiId,
   getItemsDb,
   getLanes,
   rankLabel,
@@ -47,6 +49,7 @@ import {
   QueueEntry,
   effectiveOwnedSet,
   getBuildItemIds,
+  getNextPurchases,
   getSellCandidates,
   isInventoryFull,
   isStaleLock,
@@ -70,6 +73,17 @@ import {
   setMatchLogEnabled,
 } from './services/matchLogger';
 import { grabGameFrame, releaseGameFrame } from './services/screenCapture';
+import {
+  CounterPick,
+  CustomBuild,
+  CustomBuildStats,
+  buildCustomPurchaseOrder,
+  customBuildAsArchetype,
+  fetchCustomBuild,
+  fetchCustomBuildStats,
+  getCustomCounters,
+  parseBuildId,
+} from './services/customBuild';
 import type { AppInfo, ElectronSourceInfo, UpdateStatus } from './electron';
 import { ItemCard } from './components/ItemCard';
 import { InvestmentLine, SpikeChip } from './components/InvestmentLine';
@@ -184,6 +198,21 @@ const BOARD_KEY = 'dl_board';
 const MID_BOSS_KEY = 'dl_midBoss';
 // First launch done (language and game logs chosen)
 const ONBOARDED_KEY = 'dl_onboarded';
+// Published build followed in place of the meta build, per hero (services/customBuild.ts), shared with the overlay
+const CUSTOM_BUILDS_KEY = 'dl_customBuilds';
+// Last build id loaded for each hero, kept after going back to the meta build to fill the field again
+const CUSTOM_BUILD_IDS_KEY = 'dl_customBuildIds';
+// A followed build is fetched again (new version of its author) at most this often
+const CUSTOM_BUILD_REFRESH_MS = 6 * 3600 * 1000;
+
+function readStoredRecord<T>(key: string): Record<string, T> {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
 
 /** "16:9", "21:9"... for the unsupported format message. */
 function aspectLabel(width: number, height: number): string {
@@ -381,6 +410,7 @@ export function App() {
         setMidBoss(JSON.parse(localStorage.getItem(MID_BOSS_KEY) || 'null'));
         setLockedNext(JSON.parse(localStorage.getItem('dl_lockedNext') || 'null'));
         setInventoryStatus(JSON.parse(localStorage.getItem('dl_inventoryStatus') || 'null'));
+        setCustomBuilds(readStoredRecord<CustomBuild>(CUSTOM_BUILDS_KEY));
       } catch {
         // Ignore
       }
@@ -391,7 +421,7 @@ export function App() {
 
   // Navigation Tabs & Popovers
   const [activeTab, setActiveTab] = useState<MainTab>('essential');
-  const [openPopover, setOpenPopover] = useState<'myHero' | 'ally' | 'enemies' | null>(null);
+  const [openPopover, setOpenPopover] = useState<'myHero' | 'ally' | 'enemies' | 'customBuild' | null>(null);
   const [enemyPopoverMode, setEnemyPopoverMode] = useState<'lane' | 'team'>('lane');
 
   // Screen Vision & Overlay State (100% Silent, Zero Distraction)
@@ -441,15 +471,39 @@ export function App() {
 
   const myHero = useMemo(() => HEROES.find((h) => h.id === myHeroId) || HEROES[0], [HEROES, myHeroId]);
 
+  // Published build followed for my hero (services/customBuild.ts)
+  const [customBuilds, setCustomBuilds] = useState(() => readStoredRecord<CustomBuild>(CUSTOM_BUILDS_KEY));
+  const storeCustomBuild = (heroId: string, build: CustomBuild | null) => {
+    const next = { ...readStoredRecord<CustomBuild>(CUSTOM_BUILDS_KEY) };
+    if (build) next[heroId] = build;
+    else delete next[heroId];
+    setCustomBuilds(next);
+    localStorage.setItem(CUSTOM_BUILDS_KEY, JSON.stringify(next));
+    if (build) {
+      const ids = { ...readStoredRecord<number>(CUSTOM_BUILD_IDS_KEY), [heroId]: build.buildId };
+      localStorage.setItem(CUSTOM_BUILD_IDS_KEY, JSON.stringify(ids));
+    }
+  };
+  const customBuild: CustomBuild | null =
+    customBuilds[myHeroId]?.heroId === myHeroId && customBuilds[myHeroId].groups?.length > 0 ? customBuilds[myHeroId] : null;
+
   useEffect(() => {
     if (!myHero.builds.some((b) => b.id === selectedBuildId)) {
       setSelectedBuildId(myHero.builds[0].id);
     }
   }, [myHero, selectedBuildId]);
 
-  const activeBuild = useMemo(
+  const metaBuild = useMemo(
     () => myHero.builds.find((b) => b.id === selectedBuildId) || myHero.builds[0],
     [myHero, selectedBuildId]
+  );
+  // A custom build takes the meta build's place; its texts and ability order stay those of the meta build
+  const activeBuild = useMemo(
+    () =>
+      customBuild
+        ? customBuildAsArchetype(customBuild, metaBuild, ITEMS, t('custom.subtitle', customBuild.buildId, customBuild.version))
+        : metaBuild,
+    [customBuild, metaBuild, ITEMS, t]
   );
 
   // A fed mark only counts while that hero is in the enemy lineup
@@ -464,7 +518,7 @@ export function App() {
     () =>
       generateTacticalPlan(
         myHeroId,
-        activeBuild.id,
+        metaBuild.id,
         laneColor,
         laneMode,
         laneEnemyIds,
@@ -473,7 +527,7 @@ export function App() {
         lang,
         activeFedIds
       ),
-    [myHeroId, activeBuild.id, laneColor, laneMode, laneEnemyIds, teamEnemyIds, allyPartnerId, lang, activeFedIds]
+    [myHeroId, metaBuild.id, laneColor, laneMode, laneEnemyIds, teamEnemyIds, allyPartnerId, lang, activeFedIds]
   );
   // Enemies by stance, lane opponents first, for the enemy strip and the overlay
   const stanceAlerts = useMemo(
@@ -534,7 +588,7 @@ export function App() {
    * laning. Every item already owned (detected or marked by hand), and every component consumed by an owned
    * upgrade, is skipped.
    */
-  const { queue: rawNextToBuyQueue, counters: purchaseCounters } = useMemo(
+  const { queue: metaQueue, counters: purchaseCounters } = useMemo(
     () =>
       computeBuyQueue({
         build: activeBuild,
@@ -568,6 +622,39 @@ export function App() {
       clockMinuteS,
       laneOver,
     ]
+  );
+
+  // With a custom build: its own items against the enemies first, an outside counter only for an unanswered threat
+  const customCounters = useMemo(
+    () =>
+      customBuild &&
+      getCustomCounters(customBuild, tacticalPlan.matchupAlerts, tacticalPlan.priorityItems, effectiveOwned, ITEMS),
+    [customBuild, tacticalPlan.matchupAlerts, tacticalPlan.priorityItems, effectiveOwned, ITEMS]
+  );
+
+  // A custom build keeps its author's order: no re-sorting by buy time and no spike nudge
+  const rawNextToBuyQueue = useMemo(
+    () =>
+      customBuild && customCounters
+        ? getNextPurchases(
+            buildCustomPurchaseOrder(customBuild, customCounters, ITEMS, (id) => HEROES.find((h) => h.id === id)?.name ?? id, t),
+            ownedItems,
+            inventoryStatus,
+            sellCandidates
+          )
+        : metaQueue,
+    [customBuild, customCounters, ITEMS, HEROES, t, ownedItems, inventoryStatus, sellCandidates, metaQueue]
+  );
+
+  // Counters placed in the queue (shown in orange)
+  const queuedCounterIds = useMemo(
+    () =>
+      new Set(
+        customCounters
+          ? [...customCounters.queued, ...customCounters.own.filter((p) => p.strong)].map((p) => p.itemId)
+          : purchaseCounters.map((r) => r.item.id)
+      ),
+    [customCounters, purchaseCounters]
   );
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
@@ -1073,6 +1160,107 @@ export function App() {
     return parts.join(' · ');
   };
 
+  /** Matches and win rate of the followed build (deadlock-api.com), labelled as such. */
+  const renderCustomStats = (build: CustomBuild) => {
+    const stats = customStats[build.buildId];
+    if (!stats) return null; // not fetched yet, or unreachable
+    return (
+      <p className="text-small text-slate-300" title={t('custom.statsLabel')}>
+        {stats.matches > 0
+          ? t('custom.stats', formatNumber(stats.matches), formatPercent(stats.wins / stats.matches, lang))
+          : t('custom.noStats')}
+        <span className="block text-slate-500">{t('custom.statsLabel')}</span>
+      </p>
+    );
+  };
+
+  /** Counters with a custom build: its own items against the enemies, then the threats it has no answer to. */
+  const renderCustomCounterTips = () => {
+    if (!customCounters || tacticalPlan.matchupAlerts.length === 0) return null;
+    const names = (ids: string[]) => ids.slice(0, 2).map((id) => heroName(id) ?? id).join(', ');
+    const column = (title: string, picks: CounterPick[], reason: (p: CounterPick) => string) => (
+      <div className="space-y-1.5">
+        <span className="text-small font-bold uppercase text-slate-400">{title}</span>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {picks.map((p) =>
+            ITEMS[p.itemId] ? (
+              <ItemCard
+                key={p.itemId}
+                item={ITEMS[p.itemId]}
+                isOwned={false}
+                onToggleOwned={handleToggleOwnedItem}
+                highlightReasons={[reason(p)]}
+                compact
+              />
+            ) : null
+          )}
+        </div>
+      </div>
+    );
+    return (
+      <div className="p-3 rounded-xl bg-gradient-to-r from-orange-950/30 to-deadlock-panel border border-orange-500/40 space-y-2">
+        <span className="text-body font-bold uppercase tracking-wider text-orange-300 flex items-center gap-1.5">
+          <Flame className="w-3.5 h-3.5 text-orange-400" /> {t('tips.title')}
+        </span>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {customCounters.own.length > 0 &&
+            column(t('tips.fromBuild'), customCounters.own.slice(0, 4), (p) => t('tips.vs', names(p.enemyIds)))}
+          {customCounters.outside.length > 0 ? (
+            column(t('tips.outside'), customCounters.outside.slice(0, 2), (p) => t('tips.vs', names(p.enemyIds)))
+          ) : (
+            <p className="text-small text-emerald-300 font-semibold self-start">{t('tips.covered')}</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  /** The custom build's groups with their author's names: unowned items only (`compact`), or every item. */
+  const renderCustomGroups = (build: CustomBuild, compact: boolean) => (
+    <div className={`grid grid-cols-1 gap-3 ${compact ? 'md:grid-cols-2 xl:grid-cols-3' : ''}`}>
+      {build.groups.map((group, index) => {
+        const ids = compact ? group.itemIds.filter((id) => !effectiveOwned.has(id)) : group.itemIds;
+        return (
+          <div
+            key={index}
+            className={`p-3 rounded-xl bg-deadlock-panel border space-y-2 ${
+              group.isSituational ? 'border-orange-500/30' : 'border-amber-500/30'
+            }`}
+          >
+            <h3 className="font-display text-body font-extrabold uppercase tracking-wider text-amber-300 flex items-center gap-2 flex-wrap">
+              <span className="break-words min-w-0">{group.name}</span>
+              {group.isSituational && (
+                <span className="px-1.5 rounded bg-orange-500/20 text-orange-300 text-small font-bold normal-case tracking-normal">
+                  {t('custom.situational')}
+                </span>
+              )}
+            </h3>
+            {group.description && <p className="text-small text-slate-400 whitespace-pre-line">{group.description}</p>}
+            {ids.length === 0 ? (
+              <div className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-body text-emerald-300 font-bold">
+                {t('phases.done')}
+              </div>
+            ) : (
+              <div className={`grid grid-cols-1 gap-2 ${compact ? 'sm:grid-cols-2 xl:grid-cols-1' : 'sm:grid-cols-2'}`}>
+                {ids.map((itemId) =>
+                  ITEMS[itemId] ? (
+                    <ItemCard
+                      key={itemId}
+                      item={ITEMS[itemId]}
+                      isOwned={effectiveOwned.has(itemId)}
+                      onToggleOwned={handleToggleOwnedItem}
+                      compact={compact}
+                    />
+                  ) : null
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
   /** "Imbue on [ability icon] Name 53 %" under an imbue item, when most published builds agree on the ability. */
   const renderImbueHint = (itemId: string, compact = false) => {
     const imbue = getHeroImbueTarget(myHeroId, itemId, lang);
@@ -1146,6 +1334,88 @@ export function App() {
   const totalSelectedEnemies = laneEnemyIds.length + teamEnemyIds.length;
   const allyHeroObj = allyPartnerId ? HEROES.find((h) => h.id === allyPartnerId) : null;
   const heroName = (id: string) => HEROES.find((h) => h.id === id)?.name;
+
+  /** My hero picked by hand: the scanner no longer changes it this match. */
+  const pickHero = (heroId: string) => {
+    setMyHeroId(heroId);
+    snapshotRef.current = { ...snapshotRef.current, myHeroId: heroId };
+    lockHero(true);
+    trackerRef.current.resetHero();
+    setLaneEnemyIds((prev) => prev.filter((id) => id !== heroId));
+    setTeamEnemyIds((prev) => prev.filter((id) => id !== heroId));
+    if (allyPartnerId === heroId) setAllyPartnerId(null);
+  };
+
+  // Custom build field: the id typed, the fetch, and a build of another hero waiting for the switch
+  const [customInput, setCustomInput] = useState('');
+  const [customState, setCustomState] = useState<
+    | { kind: 'idle' | 'loading' }
+    | { kind: 'error'; message: string }
+    | { kind: 'otherHero'; build: CustomBuild }
+  >({ kind: 'idle' });
+  const [customStats, setCustomStats] = useState<Record<number, CustomBuildStats | null>>({});
+
+  const openCustomBuild = () => {
+    const lastId = customBuild?.buildId ?? readStoredRecord<number>(CUSTOM_BUILD_IDS_KEY)[myHeroId];
+    setCustomInput(lastId ? String(lastId) : '');
+    setCustomState({ kind: 'idle' });
+    setOpenPopover(openPopover === 'customBuild' ? null : 'customBuild');
+  };
+
+  const loadCustomBuild = async () => {
+    const buildId = parseBuildId(customInput);
+    if (buildId === null) {
+      setCustomState({ kind: 'error', message: t('custom.invalid') });
+      return;
+    }
+    setCustomState({ kind: 'loading' });
+    const result = await fetchCustomBuild(buildId, getItemIdByApiId, getHeroIdByApiHeroId);
+    if (result.kind !== 'ok') {
+      setCustomState({
+        kind: 'error',
+        message: result.kind === 'notFound' ? t('custom.notFound', buildId) : t('custom.unreachable'),
+      });
+      return;
+    }
+    const { build } = result;
+    logEvent(`Build perso ${build.buildId} v${build.version} (${build.heroId ?? build.apiHeroId}) : ${build.name}`);
+    if (!build.heroId) setCustomState({ kind: 'error', message: t('custom.unknownHero') });
+    else if (build.groups.length === 0) setCustomState({ kind: 'error', message: t('custom.empty') });
+    else if (build.heroId !== myHeroId) setCustomState({ kind: 'otherHero', build });
+    else {
+      storeCustomBuild(myHeroId, build);
+      setCustomState({ kind: 'idle' });
+    }
+  };
+
+  const switchToBuildHero = (build: CustomBuild) => {
+    if (!build.heroId) return;
+    storeCustomBuild(build.heroId, build);
+    pickHero(build.heroId);
+    setCustomState({ kind: 'idle' });
+  };
+
+  // How the followed build does (matches, wins), and a newer version of it: fetched by the main window only
+  useEffect(() => {
+    if (isDedicatedOverlayWindow || !customBuild) return;
+    let cancelled = false;
+    if (!(customBuild.buildId in customStats)) {
+      fetchCustomBuildStats(customBuild.apiHeroId, customBuild.buildId).then((stats) => {
+        if (!cancelled) setCustomStats((prev) => ({ ...prev, [customBuild.buildId]: stats }));
+      });
+    }
+    if (Date.now() - customBuild.fetchedAt > CUSTOM_BUILD_REFRESH_MS) {
+      fetchCustomBuild(customBuild.buildId, getItemIdByApiId, getHeroIdByApiHeroId).then((result) => {
+        // Unreachable: the stored copy stays in use
+        if (!cancelled && result.kind === 'ok' && result.build.heroId === customBuild.heroId && result.build.groups.length > 0) {
+          storeCustomBuild(customBuild.heroId!, result.build);
+        }
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [isDedicatedOverlayWindow, customBuild?.buildId, customBuild?.fetchedAt]);
 
   const nameList = (ids: string[]) => {
     const names = ids.map((id) => heroName(id) ?? id);
@@ -1539,7 +1809,10 @@ export function App() {
                   <button
                     key={b.id}
                     title={`${b.name}\n${b.subtitle}`}
-                    onClick={() => setSelectedBuildId(b.id)}
+                    onClick={() => {
+                      setSelectedBuildId(b.id);
+                      if (customBuild) storeCustomBuild(myHeroId, null);
+                    }}
                     className={`px-2 py-1 rounded-md text-small font-bold transition ${
                       activeBuild.id === b.id ? 'bg-amber-500 text-black' : 'text-slate-400 hover:text-white'
                     }`}
@@ -1549,6 +1822,23 @@ export function App() {
                 ))}
               </div>
             )}
+
+            <button
+              onClick={openCustomBuild}
+              title={
+                customBuild
+                  ? `${customBuild.name}\n${t('custom.subtitle', customBuild.buildId, customBuild.version)}`
+                  : t('custom.buttonTitle')
+              }
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition text-small font-bold max-w-[14rem] ${
+                customBuild
+                  ? 'bg-amber-500 text-black border-amber-400'
+                  : 'bg-black/50 border-white/10 text-slate-400 hover:text-white'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">{customBuild ? customBuild.name : t('custom.button')}</span>
+            </button>
           </div>
 
           {/* Center: Enemies Button */}
@@ -1632,13 +1922,7 @@ export function App() {
                   <button
                     key={h.id}
                     onClick={() => {
-                      setMyHeroId(h.id);
-                      snapshotRef.current = { ...snapshotRef.current, myHeroId: h.id };
-                      lockHero(true); // picked by hand: the scanner no longer changes it this match
-                      trackerRef.current.resetHero();
-                      setLaneEnemyIds((prev) => prev.filter((id) => id !== h.id));
-                      setTeamEnemyIds((prev) => prev.filter((id) => id !== h.id));
-                      if (allyPartnerId === h.id) setAllyPartnerId(null);
+                      pickHero(h.id);
                       setOpenPopover(null);
                     }}
                     className={`p-1.5 rounded-xl border text-left flex items-center gap-1.5 ${
@@ -1652,6 +1936,85 @@ export function App() {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {openPopover === 'customBuild' && (
+            <div className="fixed inset-x-4 top-16 max-w-md mx-auto p-3.5 rounded-2xl bg-[#181520] border border-amber-500/60 shadow-2xl z-50 space-y-2.5">
+              <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                <span className="text-body font-bold uppercase text-amber-300 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5" /> {t('custom.title')}
+                </span>
+                <button onClick={() => setOpenPopover(null)} className="text-body text-slate-400">
+                  ✕
+                </button>
+              </div>
+              <p className="text-small text-slate-300">{t('custom.help')}</p>
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  loadCustomBuild();
+                }}
+              >
+                <input
+                  value={customInput}
+                  onChange={(e) => setCustomInput(e.target.value)}
+                  placeholder={t('custom.placeholder')}
+                  inputMode="numeric"
+                  autoFocus
+                  className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 focus:border-amber-400 outline-none text-body text-white placeholder:text-slate-500"
+                />
+                <button
+                  type="submit"
+                  disabled={customState.kind === 'loading'}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-black text-body font-bold"
+                >
+                  {customState.kind === 'loading' ? t('custom.loading') : t('custom.load')}
+                </button>
+              </form>
+              {customState.kind === 'error' && <p className="text-small text-red-300 font-semibold">{customState.message}</p>}
+              {customState.kind === 'otherHero' &&
+                (() => {
+                  const { build } = customState;
+                  const hero = HEROES.find((h) => h.id === build.heroId);
+                  return (
+                    <div className="p-2 rounded-lg bg-orange-950/40 border border-orange-500/40 space-y-1.5">
+                      <p className="text-small text-orange-200 font-semibold">
+                        {t('custom.otherHero', hero?.name ?? '?')} <span className="text-slate-300 font-normal">{build.name}</span>
+                      </p>
+                      <button
+                        onClick={() => switchToBuildHero(build)}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-orange-500 hover:bg-orange-400 text-black text-small font-bold"
+                      >
+                        {hero && <HeroPortraitIcon heroId={hero.id} color={hero.accentColor} size={20} />}
+                        {t('custom.switchHero', hero?.name ?? '?')}
+                      </button>
+                    </div>
+                  );
+                })()}
+              {customBuild && (
+                <div className="p-2 rounded-lg bg-amber-950/30 border border-amber-500/30 space-y-1.5">
+                  <p className="text-body font-bold text-amber-200 break-words">
+                    {t('custom.active', customBuild.name, customBuild.version)}
+                  </p>
+                  <p className="text-small text-slate-400">{customBuild.groups.map((g) => g.name).join(' · ')}</p>
+                  {customBuild.unknownItemCount > 0 && (
+                    <p className="text-small text-orange-300">{t('custom.unknownItems', customBuild.unknownItemCount)}</p>
+                  )}
+                  {renderCustomStats(customBuild)}
+                  <button
+                    onClick={() => {
+                      storeCustomBuild(myHeroId, null);
+                      setCustomState({ kind: 'idle' });
+                    }}
+                    className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-small font-bold text-slate-200"
+                  >
+                    <RotateCcw className="w-3 h-3 inline mr-1" />
+                    {t('custom.clear')}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1931,7 +2294,7 @@ export function App() {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
                     {nextToBuyQueue.slice(0, 6).map((entry, idx) => {
                       const { item } = entry;
-                      const isCounter = purchaseCounters.some((counter) => counter.item.id === item.id);
+                      const isCounter = queuedCounterIds.has(item.id);
                       const canAfford = currentSouls !== null && currentSouls >= item.cost;
                       const missingSouls =
                         currentSouls !== null && currentSouls < item.cost ? item.cost - currentSouls : null;
@@ -2134,68 +2497,74 @@ export function App() {
                   </div>
                 )}
 
-                {/* Urgent Counter Items Against Selected Enemies (UNOWNED ONLY) */}
-                {tacticalPlan.priorityItems.filter((rec) => !effectiveOwned.has(rec.item.id)).length > 0 && (
-                  <div className="p-3 rounded-xl bg-gradient-to-r from-orange-950/30 to-deadlock-panel border border-orange-500/40 space-y-2">
-                    <span className="text-body font-bold uppercase tracking-wider text-orange-300 flex items-center gap-1.5">
-                      <Flame className="w-3.5 h-3.5 text-orange-400" />{' '}
-                      {t('counters.title', laneEnemyIds.map(heroName).join(' + '), teamEnemyIds.length)}
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-                      {tacticalPlan.priorityItems
-                        .filter((rec) => !effectiveOwned.has(rec.item.id))
-                        .slice(0, 3)
-                        .map((rec) => (
-                          <ItemCard
-                            key={rec.item.id}
-                            item={rec.item}
-                            isOwned={false}
-                            onToggleOwned={handleToggleOwnedItem}
-                            highlightReasons={rec.reasons}
-                            compact
-                          />
-                        ))}
+                {/* Urgent Counter Items Against Selected Enemies (UNOWNED ONLY); with a custom build, its own items first */}
+                {customCounters
+                  ? renderCustomCounterTips()
+                  : tacticalPlan.priorityItems.filter((rec) => !effectiveOwned.has(rec.item.id)).length > 0 && (
+                    <div className="p-3 rounded-xl bg-gradient-to-r from-orange-950/30 to-deadlock-panel border border-orange-500/40 space-y-2">
+                      <span className="text-body font-bold uppercase tracking-wider text-orange-300 flex items-center gap-1.5">
+                        <Flame className="w-3.5 h-3.5 text-orange-400" />{' '}
+                        {t('counters.title', laneEnemyIds.map(heroName).join(' + '), teamEnemyIds.length)}
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                        {tacticalPlan.priorityItems
+                          .filter((rec) => !effectiveOwned.has(rec.item.id))
+                          .slice(0, 3)
+                          .map((rec) => (
+                            <ItemCard
+                              key={rec.item.id}
+                              item={rec.item}
+                              isOwned={false}
+                              onToggleOwned={handleToggleOwnedItem}
+                              highlightReasons={rec.reasons}
+                              compact
+                            />
+                          ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                    )}
 
                 {/* 3 Build Phases — filtered so owned items automatically disappear and show only remaining items */}
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-                  {(
-                    [
-                      { key: 'early', title: t('phases.early'), accent: 'text-amber-300 border-amber-500/30' },
-                      { key: 'mid', title: t('phases.mid'), accent: 'text-purple-300 border-purple-500/30' },
-                      { key: 'late', title: t('phases.late'), accent: 'text-teal-300 border-teal-500/30' },
-                    ] as const
-                  ).map((col) => {
-                    const unownedPhaseIds = activeBuild.phases[col.key].filter((id) => !effectiveOwned.has(id));
-                    return (
-                      <div key={col.key} className={`p-3 rounded-xl bg-deadlock-panel border ${col.accent} space-y-2`}>
-                        <h3 className="font-display text-body font-extrabold uppercase tracking-wider">{col.title}</h3>
-                        {unownedPhaseIds.length === 0 ? (
-                          <div className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-body text-emerald-300 font-bold">
-                            {t('phases.done')}
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-2">
-                            {unownedPhaseIds.map((itemId) => {
-                              const item = ITEMS[itemId];
-                              return item ? (
-                                <ItemCard
-                                  key={itemId}
-                                  item={item}
-                                  isOwned={false}
-                                  onToggleOwned={handleToggleOwnedItem}
-                                  compact
-                                />
-                              ) : null;
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                {customBuild ? (
+                  renderCustomGroups(customBuild, true)
+                ) : (
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+                    {(
+                      [
+                        { key: 'early', title: t('phases.early'), accent: 'text-amber-300 border-amber-500/30' },
+                        { key: 'mid', title: t('phases.mid'), accent: 'text-purple-300 border-purple-500/30' },
+                        { key: 'late', title: t('phases.late'), accent: 'text-teal-300 border-teal-500/30' },
+                      ] as const
+                    ).map((col) => {
+                      const unownedPhaseIds = activeBuild.phases[col.key].filter((id) => !effectiveOwned.has(id));
+                      return (
+                        <div key={col.key} className={`p-3 rounded-xl bg-deadlock-panel border ${col.accent} space-y-2`}>
+                          <h3 className="font-display text-body font-extrabold uppercase tracking-wider">{col.title}</h3>
+                          {unownedPhaseIds.length === 0 ? (
+                            <div className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-body text-emerald-300 font-bold">
+                              {t('phases.done')}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-2">
+                              {unownedPhaseIds.map((itemId) => {
+                                const item = ITEMS[itemId];
+                                return item ? (
+                                  <ItemCard
+                                    key={itemId}
+                                    item={item}
+                                    isOwned={false}
+                                    onToggleOwned={handleToggleOwnedItem}
+                                    compact
+                                  />
+                                ) : null;
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* Owned Items Archive at the bottom of the page */}
                 {ownedItems.length > 0 && (
@@ -2249,8 +2618,9 @@ export function App() {
                 <div className="p-3 rounded-xl bg-deadlock-panel border border-amber-500/30">
                   <h3 className="text-title font-extrabold text-amber-300">{activeBuild.name}</h3>
                   <p className="text-small text-slate-300">{activeBuild.subtitle}</p>
+                  {customBuild && renderCustomStats(customBuild)}
                 </div>
-                {(
+                {customBuild ? renderCustomGroups(customBuild, false) : (
                   [
                     { key: 'early', title: t('details.early') },
                     { key: 'mid', title: t('details.mid') },

@@ -3,7 +3,8 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Content-Security-Policy of the built pages: local files only, plus the fonts, the game data and the icons of
-// items newer than the release (src/data/dataSource.ts). Not in development: Vite's hot reload needs inline scripts.
+// items newer than the release (src/data/dataSource.ts), and the published builds (src/services/customBuild.ts).
+// Not in development: Vite's hot reload needs inline scripts.
 const CSP = [
   "default-src 'self' file:",
   "script-src 'self' file: 'wasm-unsafe-eval'",
@@ -11,7 +12,7 @@ const CSP = [
   "style-src 'self' file: 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' file: https://fonts.gstatic.com",
   "img-src 'self' file: data: blob: https://raw.githubusercontent.com https://assets-bucket.deadlock-api.com",
-  "connect-src 'self' file: https://raw.githubusercontent.com",
+  "connect-src 'self' file: https://raw.githubusercontent.com https://api.deadlock-api.com",
   "media-src 'self' blob: mediastream:",
   "object-src 'none'",
   "base-uri 'none'",

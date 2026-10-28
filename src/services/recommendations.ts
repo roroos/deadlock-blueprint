@@ -18,6 +18,7 @@ export interface QueueEntry {
   item: DeadlockItem;
   reason: string;
   phase?: 'early' | 'mid' | 'late' | 'situational'; // phase of the active build that holds the item
+  group?: string; // author's group of a custom build (services/customBuild.ts)
 }
 
 export type SlotPlan =
@@ -57,7 +58,7 @@ export function effectiveOwnedSet(ownedItems: string[]): Set<string> {
  * A counter only goes into the purchase queue when the threat is real: it answers the enemy in my lane, or
  * at least two different enemies (one team enemy alone is not worth bending the build for).
  */
-const isStrongCounter = (r: TacticalRecommendation['priorityItems'][number]) =>
+export const isStrongCounter = (r: TacticalRecommendation['priorityItems'][number]) =>
   r.urgency === 'Critique (En Face / Lane)' || r.reasons.length >= 2;
 
 /**

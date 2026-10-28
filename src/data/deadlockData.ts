@@ -908,6 +908,7 @@ const LEGACY_ITEMS_DB: Record<string, LegacyItem> = {
 // ================= CATALOGUE GÉNÉRÉ (npm run update-builds) =================
 interface GeneratedCatalogItem {
   id: string;
+  apiId?: number; // game id of the item (API builds and statistics)
   nameFr: string;
   nameEn: string;
   category: ItemCategory;
@@ -2310,6 +2311,7 @@ interface GeneratedBuild {
 }
 
 interface GeneratedHeroMeta {
+  apiHeroId?: number; // game id of the hero
   matches: number;
   winRate: number;
   badgeMin: number;
@@ -2552,6 +2554,17 @@ export interface HeroItemStat {
   buyTimeS: number; // average buy time
 }
 
+/** Local item id of a game item id (`ability_id` in the API's builds), for the items of the catalogue. */
+export function getItemIdByApiId(apiId: number): string | undefined {
+  const items = (getCatalogData() as unknown as { items: Record<string, GeneratedCatalogItem> }).items ?? {};
+  return Object.values(items).find((item) => item.apiId === apiId)?.id;
+}
+
+/** Game hero id (`hero_id` in the API) of a local hero, and back. */
+export const getApiHeroId = (heroId: string): number | undefined => generatedHeroes()[heroId]?.apiHeroId;
+export const getHeroIdByApiHeroId = (apiHeroId: number): string | undefined =>
+  Object.entries(generatedHeroes()).find(([, hero]) => hero.apiHeroId === apiHeroId)?.[0];
+
 /** Statistics of an item on this hero, for the rank bracket of the meta build. */
 export function getHeroItemStat(heroId: string, itemId: string): HeroItemStat | undefined {
   const row = generatedHeroes()[heroId]?.itemStats?.[itemId];
@@ -2617,6 +2630,8 @@ export interface TacticalRecommendation {
     ult?: { key: '4'; name: string };
     /** The best items against this enemy (statistics, threat tags, hand-written matchups), best first */
     counters: { item: DeadlockItem; reason: string }[];
+    /** Every item that answers this enemy, best first (counters holds the first few) */
+    counterIds: string[];
   }[];
   laneStrategy: {
     laneTitle: string;
@@ -2833,6 +2848,7 @@ export function generateTacticalPlan(
         stat,
         isFed,
         counters: [], // filled by evaluateEnemyCard
+        counterIds: [],
       });
       specific.mustBuyItems.forEach((itemId, idx) => {
         addItemRecommendation(
@@ -2875,6 +2891,7 @@ export function generateTacticalPlan(
         stat,
         isFed,
         counters: [], // filled by evaluateEnemyCard
+        counterIds: [],
       });
     }
 
@@ -2922,10 +2939,11 @@ export function generateTacticalPlan(
     const card = matchupAlerts[matchupAlerts.length - 1];
     const ult = enemy.builds[0]?.abilitiesDetails.find((a) => a.key === '4');
     if (ult) card.ult = { key: '4', name: ult.name };
-    card.counters = Object.entries(enemyCounters)
-      .sort((a, b) => b[1].score - a[1].score || items[a[0]].cost - items[b[0]].cost || a[0].localeCompare(b[0]))
-      .slice(0, ENEMY_COUNTERS_SHOWN)
-      .map(([itemId, c]) => ({ item: items[itemId], reason: c.reason }));
+    const ranked = Object.entries(enemyCounters).sort(
+      (a, b) => b[1].score - a[1].score || items[a[0]].cost - items[b[0]].cost || a[0].localeCompare(b[0])
+    );
+    card.counters = ranked.slice(0, ENEMY_COUNTERS_SHOWN).map(([itemId, c]) => ({ item: items[itemId], reason: c.reason }));
+    card.counterIds = ranked.map(([itemId]) => itemId);
     enemyCounters = null;
   };
   laneEnemies.forEach((e) => evaluateEnemyCard(e, true));

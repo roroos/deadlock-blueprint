@@ -9,10 +9,11 @@ one category to 4,800, then the next, then the last, and the buy tab follows tha
 - **Spike line** above the buy cards: the three categories in the build's spike order, the souls in each
   (✓ at 4,800), and when high-rank players have that many spikes. It turns amber once the match clock is past
   that minute. The overlay shows the next spike only.
-- **"Reaches the 4,800 … spike"** on any shown item that takes a category from below 4,800 to 4,800 or more.
-- **Gentle nudge**: when #2 or #3 takes the *next* spike's category to 4,800, the #1 does not, and players usually
-  buy the two within 2 minutes of each other, that item becomes #1. Nothing else is reordered, and a locked #1
-  stays locked.
+- **"Reaches the 4,800 … spike"** on a shown item that takes the *next* spike's category to 4,800.
+- **Gentle nudge**: when #2 or #3 has that badge, the #1 does not, and players usually buy the two within
+  2 minutes of each other, that item becomes #1. Nothing else is reordered, and a locked #1 stays locked.
+- **Only the first two spikes are pushed.** Once two categories are at 4,800, the third gets no pace to keep, and
+  the badge and nudge only point out a small top-up (an item adding 800 souls or less to it).
 
 The spike order comes from the build: buying its early, mid and late items in order, the order the categories
 reach 4,800 (categories it never takes there come last, most souls first). An upgrade counts at its full price

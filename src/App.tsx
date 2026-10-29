@@ -56,8 +56,10 @@ import {
   withLockedFirst,
 } from './services/recommendations';
 import {
+  CHEAP_TOP_UP,
   CORE_SPIKES,
   KEY_SPIKE,
+  investmentItems,
   investmentProgress,
   isSpikeWorthIt,
   nudgeTowardKeySpike,
@@ -517,13 +519,23 @@ export function App() {
     () => spikeOrder([...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late]),
     [activeBuild]
   );
-  const investment = useMemo(() => investmentProgress(buildSpikeOrder, ownedItems), [buildSpikeOrder, ownedItems]);
+  // Hand-marked items ("Skip") count only once the scanner sees them (services/investments.ts)
+  const investedItems = useMemo(
+    () => investmentItems(ownedItems, readManualOwned(), inventoryStatus?.itemIds ?? null),
+    [ownedItems, inventoryStatus]
+  );
+  const investment = useMemo(() => investmentProgress(buildSpikeOrder, investedItems), [buildSpikeOrder, investedItems]);
 
   const rawNextToBuyQueue = useMemo(() => {
     const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
     const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
-    return nudgeTowardKeySpike(queue, ownedItems, investment, (itemId) => buyTimeS(itemId) || undefined);
-  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investment]);
+    // The item each card will say to sell (inventory full) leaves before the spike is counted
+    const soldItem = (q: QueueEntry[], itemId: string) => {
+      const plan = getSlotPlans(q.slice(0, 6), ownedItems, inventoryStatus, sellCandidates).get(itemId);
+      return plan?.kind === 'sell' ? plan.itemId : undefined;
+    };
+    return nudgeTowardKeySpike(queue, investedItems, investment, (itemId) => buyTimeS(itemId) || undefined, soldItem);
+  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investedItems, investment]);
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
@@ -1048,30 +1060,36 @@ export function App() {
     );
   };
 
-  /** "Reaches the 4,800 Spirit spike" under an item that finishes the next spike worth it (isSpikeWorthIt). */
+  /**
+   * "Reaches the 4,800 Spirit spike" under an item that finishes the next spike worth it (isSpikeWorthIt), after
+   * selling what its card says to sell. Neutral chip with the tab colour on the icon: amber is kept for "late".
+   */
   const renderSpikeHint = (itemId: string, compact = false) => {
     const category = investment.target?.category;
-    if (!category || !isSpikeWorthIt(itemId, ownedItems, investment)) return null;
+    const plan = slotPlans.get(itemId);
+    const soldId = plan?.kind === 'sell' ? plan.itemId : undefined;
+    if (!category || !isSpikeWorthIt(itemId, investedItems, investment, soldId)) return null;
     return (
       <div
-        className={`flex items-center gap-1.5 rounded-lg border font-bold bg-amber-500/15 border-amber-400/40 text-amber-200 ${
+        className={`flex items-center gap-1.5 rounded-lg border font-bold bg-white/5 border-white/20 text-slate-100 ${
           compact ? 'px-1.5 py-0.5' : 'px-2 py-1'
         } text-small`}
         title={t('invest.spikeTitle')}
       >
-        <TrendingUp className="w-3 h-3 shrink-0" />
+        <TrendingUp className={`w-3 h-3 shrink-0 ${SHOP_TABS[category].className}`} aria-hidden />
         <span>{t('invest.spike', t(`category.${category}`), formatNumber(KEY_SPIKE))}</span>
       </div>
     );
   };
 
   /**
-   * The three 4,800 spikes in the build's order: souls in each category, the one to finish next and when
-   * high-rank players have that many. Compact (overlay): the next one only.
+   * The three 4,800 spikes in the build's order: souls in each category, the one to finish next and when players
+   * usually have that many (rank 81+ to rank 1-40). Amber only once the clock is past the slower median.
+   * Compact (overlay): the next one only, with a short pace line.
    */
   const renderInvestment = (compact = false) => {
-    const { categories, target, spikeNumber, minute } = investment;
-    if (!target || minute === null) {
+    const { categories, target, spikeNumber, pace } = investment;
+    if (!target || !pace) {
       return (
         <p className="text-small text-slate-400" title={t('invest.title')}>
           {t('invest.allDone', formatNumber(KEY_SPIKE))}
@@ -1080,13 +1098,20 @@ export function App() {
     }
     // Past the first two spikes, the third is only worth a cheap top-up: no pace to keep
     const coreDone = spikeNumber > CORE_SPIKES;
-    const behind = !coreDone && clockS !== undefined && clockS > minute * 60;
-    const pace = coreDone ? (
-      <span className="text-slate-400">{t('invest.coreDone')}</span>
+    const range = `${Math.round(pace.highRank)}–${Math.round(pace.lowRank)}`;
+    const late = String(Math.round(pace.lowRank));
+    const behind = !coreDone && clockS !== undefined && clockS > pace.lowRank * 60;
+    const paceLine = coreDone ? (
+      <span className="text-slate-400">
+        {compact ? t('invest.coreDoneShort', formatNumber(CHEAP_TOP_UP)) : t('invest.coreDone', formatNumber(CHEAP_TOP_UP))}
+      </span>
+    ) : behind ? (
+      <span className="font-bold text-amber-300">
+        {compact ? t('invest.behindShort', spikeNumber, late) : t('invest.behind', spikeNumber, late)}
+      </span>
     ) : (
-      <span className={behind ? 'font-bold text-amber-300' : 'text-slate-400'}>
-        {t('invest.pace', spikeNumber, String(Math.round(minute)))}
-        {behind && ` · ${t('invest.behind')}`}
+      <span className="text-slate-400">
+        {compact ? t('invest.paceShort', spikeNumber, range) : t('invest.pace', spikeNumber, range)}
       </span>
     );
     const segment = (c: (typeof categories)[number], index: number) => {
@@ -1117,7 +1142,7 @@ export function App() {
       return (
         <div className="space-y-1" title={t('invest.title')}>
           {segment(target, categories.indexOf(target))}
-          <p className="text-small">{pace}</p>
+          <p className="text-small truncate">{paceLine}</p>
         </div>
       );
     }
@@ -1125,7 +1150,7 @@ export function App() {
       <div className="space-y-1.5" title={t('invest.title')}>
         <div className="flex items-baseline justify-between gap-2 flex-wrap text-small">
           <span className="font-bold text-slate-200">{t('invest.label', formatNumber(KEY_SPIKE))}</span>
-          {pace}
+          {paceLine}
         </div>
         <div className="flex gap-3">{categories.map(segment)}</div>
       </div>

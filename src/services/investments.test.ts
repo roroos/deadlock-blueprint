@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ITEMS_DB } from '../data/deadlockData';
 import {
   investedSouls,
+  investmentItems,
   investmentProgress,
   isSpikeWorthIt,
   keySpikeReached,
@@ -36,6 +37,21 @@ describe('investedSouls', () => {
   });
 });
 
+describe('investmentItems', () => {
+  const manual = new Set(['tesla_bullets']);
+
+  it('counts a hand-marked item ("Skip") only once the scanner sees it', () => {
+    expect(investmentItems(['tesla_bullets', 'extended_magazine'], manual, ['extended_magazine'])).toEqual([
+      'extended_magazine',
+    ]);
+    expect(investmentItems(['tesla_bullets'], manual, ['tesla_bullets'])).toEqual(['tesla_bullets']);
+  });
+
+  it('keeps the hand-marked items without an inventory read', () => {
+    expect(investmentItems(['tesla_bullets'], manual, null)).toEqual(['tesla_bullets']);
+  });
+});
+
 describe('spikeOrder', () => {
   it('follows the order the build takes each category to 4,800', () => {
     expect(spikeOrder(BUILD)).toEqual(['weapon', 'spirit', 'vitality']);
@@ -57,7 +73,7 @@ describe('investmentProgress', () => {
     const progress = investmentProgress(order, ['tesla_bullets']);
     expect(progress.target).toEqual({ category: 'weapon', souls: 3200, done: false });
     expect(progress.spikeNumber).toBe(1);
-    expect(progress.minute).toBe(10.2);
+    expect(progress.pace).toEqual({ highRank: 10.2, lowRank: 11.6 });
   });
 
   it('moves on to the next category once one is at 4,800', () => {
@@ -65,7 +81,7 @@ describe('investmentProgress', () => {
     expect(progress.categories.map((c) => c.done)).toEqual([true, false, false]);
     expect(progress.target?.category).toBe('spirit');
     expect(progress.spikeNumber).toBe(2);
-    expect(progress.minute).toBe(15.3);
+    expect(progress.pace).toEqual({ highRank: 15.3, lowRank: 17.4 });
   });
 
   it('counts a spike reached out of order', () => {
@@ -77,7 +93,7 @@ describe('investmentProgress', () => {
   it('has no target once all three are at 4,800', () => {
     const progress = investmentProgress(order, BUILD);
     expect(progress.target).toBeNull();
-    expect(progress.minute).toBeNull();
+    expect(progress.pace).toBeNull();
   });
 });
 
@@ -89,6 +105,14 @@ describe('keySpikeReached', () => {
 
   it('counts an upgrade minus the component it consumes', () => {
     expect(keySpikeReached('capacitor', ['tesla_bullets'])).toBe('weapon');
+  });
+
+  it('takes out the item sold to make room first', () => {
+    expect(keySpikeReached('monster_rounds', ['tesla_bullets', 'extended_magazine'])).toBe('weapon');
+    expect(keySpikeReached('monster_rounds', ['tesla_bullets', 'extended_magazine'], 'extended_magazine')).toBeNull();
+    expect(keySpikeReached('monster_rounds', ['tesla_bullets', 'extended_magazine', 'extra_spirit'], 'extra_spirit')).toBe(
+      'weapon'
+    );
   });
 
   it('is null once the category is already past 4,800', () => {
@@ -138,6 +162,17 @@ describe('nudgeTowardKeySpike', () => {
 
   it('keeps the order when the spike item is usually bought much later', () => {
     expect(nudgeTowardKeySpike(queue, owned, progress, (id) => ({ ...times, long_range: 900 })[id])).toBe(queue);
+  });
+
+  it('does not nudge an item whose spike the sale it needs takes back', () => {
+    const full = ['tesla_bullets', 'extended_magazine'];
+    const fullProgress = investmentProgress(spikeOrder(BUILD), full);
+    const q = [entry('extra_spirit'), entry('monster_rounds')];
+    const at = () => 600;
+    expect(ids(nudgeTowardKeySpike(q, full, fullProgress, at))).toEqual(['monster_rounds', 'extra_spirit']);
+    // The #1 sells the weakest item: once moved to #1, the spike item would sell Extended Magazine
+    const sold = (queue: QueueEntry[], id: string) => (queue[0].item.id === id ? 'extended_magazine' : undefined);
+    expect(nudgeTowardKeySpike(q, full, fullProgress, at, sold)).toBe(q);
   });
 
   it('never reaches past #3', () => {

@@ -283,15 +283,18 @@ export function getCustomCounters(
 
 /**
  * Purchase order of a custom build: its ordered groups in the author's order, each item labelled with its
- * group; the queued Tier 1-2 counter after the first two items, the Tier 3-4 one after the first two items of
- * Tier 2+ (where the meta order puts them). Situational items only enter as counters.
+ * group. Counters come along the game, never among the first group (the lane items): each queued counter goes
+ * before the first later item players usually buy after it (`buyTimeS`). Without a time, the Tier 1-2 one goes
+ * right after the first group, the Tier 3-4 one after two Tier 2+ items as well. Situational items only enter
+ * as counters.
  */
 export function buildCustomPurchaseOrder(
   build: CustomBuild,
   { queued, own }: CustomCounters,
   items: Record<string, DeadlockItem>,
   enemyName: (enemyId: string) => string,
-  t: Translate
+  t: Translate,
+  buyTimeS?: (itemId: string) => number | undefined
 ): QueueEntry[] {
   // The counter engine's reasons may name another enemy than the one left unanswered: the picks' own enemies
   const counterReason = (p: CounterPick) => {
@@ -314,16 +317,26 @@ export function buildCustomPurchaseOrder(
   const push = (e: QueueEntry | null) => {
     if (e && !queue.some((q) => q.item.id === e.item.id)) queue.push(e);
   };
-  let tier2Seen = 0;
+  const firstGroupSize = ordered.filter((e) => build.groups.find((g) => !g.isSituational)?.itemIds.includes(e.item.id)).length;
+  const afterTwoTier2 = ordered.findIndex((_, i) => ordered.slice(0, i).filter((e) => e.item.tier >= 2).length >= 2);
+  // Index of the ordered item the counter goes before (ordered.length: at the end)
+  const slotOf = (counter: CounterPick, fallback: number) => {
+    const time = buyTimeS?.(counter.itemId);
+    if (time === undefined) return Math.max(firstGroupSize, fallback);
+    const later = ordered.findIndex((e, i) => i >= firstGroupSize && (buyTimeS?.(e.item.id) ?? -Infinity) > time);
+    return later < 0 ? ordered.length : later;
+  };
+  const slots = [
+    ...(low ? [{ counter: low, slot: slotOf(low, 0) }] : []),
+    ...(high ? [{ counter: high, slot: slotOf(high, afterTwoTier2 < 0 ? ordered.length : afterTwoTier2) }] : []),
+  ];
+  const pushCountersAt = (slot: number) =>
+    slots.filter((s) => s.slot === slot).forEach((s) => push(entry(s.counter.itemId, s.counter)));
   ordered.forEach((e, index) => {
+    pushCountersAt(index);
     push(e);
-    if (e.item.tier >= 2) tier2Seen++;
-    if (index === 1 && low) push(entry(low.itemId, low));
-    if (tier2Seen === 2 && high) push(entry(high.itemId, high));
   });
-  // Short builds: the counters still have a place
-  if (low) push(entry(low.itemId, low));
-  if (high) push(entry(high.itemId, high));
+  pushCountersAt(ordered.length);
   // Items of the order that also answer a real threat say so
   const labelled = [...queued, ...own.filter((p) => p.strong)];
   return queue.map((e) => {

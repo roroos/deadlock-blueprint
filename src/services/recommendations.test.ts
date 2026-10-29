@@ -10,9 +10,12 @@ import {
   getPurchaseCounters,
   getSellCandidates,
   getSlotPlans,
+  hasLaneThreat,
   isInventoryFull,
+  isLaneOver,
   withLockedFirst,
 } from './recommendations';
+import { sellKeepsSpikes } from './investments';
 
 const t = makeTranslate('en');
 
@@ -126,6 +129,69 @@ describe('purchase order', () => {
   });
 });
 
+describe('lane counters', () => {
+  const lane = counter('extra_charge', '[LANE] Sustain vs Abrams'); // Tier 1, lane-only
+  const laneT3 = counter('metal_skin', '[LANE] Metal Skin vs Abrams'); // Tier 3
+  const fed = counter('extra_regen', '🔥 [LANE] Sustain vs Ivy'); // Tier 1
+  const twoEnemies = {
+    ...counter('spirit_resilience', '[TEAM] Resist vs Abrams', 'Haute (Teamfight / Mid)'),
+    reasons: ['[TEAM] Resist vs Abrams', '[TEAM] Resist vs Kelvin'],
+  };
+  const ids = (priorities: ReturnType<typeof counter>[], context = {}) =>
+    getPurchaseCounters(priorities, context).map((r) => r.item.id);
+
+  it('needs a real lane threat: a lane enemy to avoid, a fed lane enemy or a hard lane', () => {
+    const alert = (over: object) => ({ isInMyLane: true, isFed: false, stance: 'even' as const, ...over });
+    expect(hasLaneThreat([alert({})], 'even')).toBe(false);
+    expect(hasLaneThreat([alert({ stance: 'avoid' })])).toBe(true);
+    expect(hasLaneThreat([alert({ isFed: true })])).toBe(true);
+    expect(hasLaneThreat([alert({})], 'hard')).toBe(true);
+    expect(hasLaneThreat([alert({ isInMyLane: false, stance: 'avoid' })], 'favourable')).toBe(false);
+  });
+
+  it('keeps a lane-only counter out of the queue without a lane threat', () => {
+    expect(ids([lane, laneT3], { laneThreat: false })).toEqual([]);
+    expect(ids([lane, laneT3], { laneThreat: true })).toEqual(['extra_charge', 'metal_skin']);
+  });
+
+  it('drops a Tier 1-2 lane-only counter once laning is over, and keeps a Tier 3-4 one', () => {
+    expect(ids([lane, laneT3], { laneThreat: true, laneOver: true })).toEqual(['metal_skin']);
+  });
+
+  it('never touches the counters against a fed enemy or against two enemies', () => {
+    const noLane = { laneThreat: false, laneOver: true };
+    expect(ids([fed, twoEnemies], noLane)).toEqual(['extra_regen', 'spirit_resilience']);
+  });
+
+  it('counts an item against both lane enemies as a lane counter, not one that also answers a team enemy', () => {
+    const bothLane = { ...lane, reasons: ['[LANE] Sustain vs Abrams', '[LANE] Sustain vs Kelvin'] };
+    const laneAndTeam = { ...lane, reasons: ['[LANE] Sustain vs Abrams', '[TEAM] Sustain vs Kelvin'] };
+    expect(ids([bothLane], { laneThreat: false })).toEqual([]);
+    expect(ids([laneAndTeam], { laneThreat: false })).toEqual(['extra_charge']);
+  });
+
+  it('keeps the old behaviour without a context', () => {
+    expect(ids([lane, laneT3])).toEqual(['extra_charge', 'metal_skin']);
+  });
+
+  it('puts the lane counter after the first two early items, and nowhere once laning is over', () => {
+    const early = (context: object) =>
+      buildPurchaseOrder(BUILD, [lane], ITEMS_DB, t, context).map((e) => e.item.id);
+    expect(early({ laneThreat: true, laneOver: false }).slice(0, 3)).toEqual(['extra_spirit', 'extended_magazine', 'extra_charge']);
+    expect(early({ laneThreat: true, laneOver: true })).toEqual(
+      buildPurchaseOrder(BUILD, [], ITEMS_DB, t).map((e) => e.item.id)
+    );
+  });
+
+  it('reads laning as over at 10 min, or at about 6,400 souls without a clock', () => {
+    expect(isLaneOver(599, 0)).toBe(false);
+    expect(isLaneOver(600, 0)).toBe(true);
+    expect(isLaneOver(undefined, 6399)).toBe(false);
+    expect(isLaneOver(undefined, 6400)).toBe(true);
+    expect(isLaneOver(300, 9000)).toBe(false); // the clock wins when it is read
+  });
+});
+
 describe('next purchases', () => {
   const order = buildPurchaseOrder(BUILD, [], ITEMS_DB, t);
 
@@ -193,5 +259,51 @@ describe('inventory full', () => {
     const plans = getSlotPlans(shown, owned, full, getSellCandidates(full, BUILD, new Set()));
     expect(plans.get('improved_spirit')).toEqual({ kind: 'upgrade', itemId: 'extra_spirit' });
     expect(plans.get('titanic_magazine')).toEqual({ kind: 'sell', itemId: 'healbane' });
+  });
+
+  describe('finished 4,800 spikes', () => {
+    // Weapon at 4,800 with Tesla Bullets and Long Range; Healbane (vitality, 800) is the weakest item
+    const owned = ['tesla_bullets', 'long_range', 'healbane', 'extra_regen'];
+    const full = status(owned, 12);
+    const candidates = getSellCandidates(full, build({}), new Set());
+
+    it('tells a sale that drops a finished spike from one that does not', () => {
+      expect(sellKeepsSpikes(owned, 'long_range', 'extended_magazine')).toBe(false);
+      expect(sellKeepsSpikes(owned, 'long_range', 'close_quarters')).toBe(false);
+      expect(sellKeepsSpikes(owned, 'healbane', 'extended_magazine')).toBe(true);
+    });
+
+    it('lets the new item bring the category back to 4,800', () => {
+      expect(sellKeepsSpikes(owned, 'long_range', 'swift_striker')).toBe(true); // 1,600 for 1,600
+    });
+
+    it('suggests the next weakest item when the first would break a spike', () => {
+      const shown = [{ item: ITEMS_DB.extended_magazine, reason: '' }];
+      const plain = getSlotPlans(shown, owned, full, ['long_range', 'healbane']);
+      expect(plain.get('extended_magazine')).toEqual({ kind: 'sell', itemId: 'long_range' });
+      const guarded = getSlotPlans(shown, owned, full, ['long_range', 'healbane'], (sold, item) =>
+        sellKeepsSpikes(owned, sold, item)
+      );
+      expect(guarded.get('extended_magazine')).toEqual({ kind: 'sell', itemId: 'healbane' });
+      expect(candidates).toContain('healbane');
+    });
+
+    it('says the inventory is full when every candidate would break a spike', () => {
+      const shown = [{ item: ITEMS_DB.extended_magazine, reason: '' }];
+      const plans = getSlotPlans(shown, owned, full, ['long_range'], (sold, item) => sellKeepsSpikes(owned, sold, item));
+      expect(plans.get('extended_magazine')).toEqual({ kind: 'full' });
+    });
+
+    it('does not suggest the same sale twice', () => {
+      const shown = [
+        { item: ITEMS_DB.extended_magazine, reason: '' },
+        { item: ITEMS_DB.close_quarters, reason: '' },
+      ];
+      const plans = getSlotPlans(shown, owned, full, ['long_range', 'healbane', 'extra_regen'], (sold, item) =>
+        sellKeepsSpikes(owned, sold, item)
+      );
+      expect(plans.get('extended_magazine')).toEqual({ kind: 'sell', itemId: 'healbane' });
+      expect(plans.get('close_quarters')).toEqual({ kind: 'sell', itemId: 'extra_regen' });
+    });
   });
 });

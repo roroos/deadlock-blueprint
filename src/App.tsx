@@ -50,6 +50,8 @@ import {
   buildPurchaseOrder,
   effectiveOwnedSet,
   getPurchaseCounters,
+  hasLaneThreat,
+  isLaneOver,
   getNextPurchases,
   getSellCandidates,
   getSlotPlans,
@@ -59,12 +61,15 @@ import {
 import {
   CHEAP_TOP_UP,
   CORE_SPIKES,
+  KEY_CORE_PICK_RATE,
   KEY_SPIKE,
   inBuyOrder,
   investmentItems,
+  investedSouls,
   investmentProgress,
   isSpikeWorthIt,
   nudgeTowardKeySpike,
+  sellKeepsSpikes,
   spikeOrder,
 } from './services/investments';
 import {
@@ -498,14 +503,38 @@ export function App() {
    * opponents, then mid and late game items. Every item already owned (detected or marked by hand), and every
    * component consumed by an owned upgrade, is skipped.
    */
+  // Match clock (extrapolated between two readings)
+  const clockS = board?.clock ? Math.floor(clockAt(board.clock, nowMs)) : undefined;
+
+  // Laning ends at 10 min (the clock, else about 6,400 souls spent). Latched for the match: the clock is forgotten 15 s
+  // after the top bar was last seen, and a lane counter must not come back with it
+  const soulsSpent = useMemo(
+    () => Object.values(investedSouls(ownedItems)).reduce((sum, souls) => sum + souls, 0),
+    [ownedItems]
+  );
+  const [laneOverLatched, setLaneOverLatched] = useState(false);
+  const laneOver = laneOverLatched || isLaneOver(clockS, soulsSpent);
+  useEffect(() => {
+    if (laneOver && !laneOverLatched) setLaneOverLatched(true);
+  }, [laneOver, laneOverLatched]);
+
+  // Lane-only counters need a real lane threat, and a Tier 1-2 one leaves with laning (services/recommendations.ts)
+  const counterContext = useMemo(
+    () => ({
+      laneThreat: hasLaneThreat(tacticalPlan.matchupAlerts, tacticalPlan.laneStrategy.outlook?.outlook),
+      laneOver,
+    }),
+    [tacticalPlan.matchupAlerts, tacticalPlan.laneStrategy.outlook, laneOver]
+  );
+
   const purchaseOrder = useMemo(
-    () => buildPurchaseOrder(activeBuild, tacticalPlan.priorityItems, ITEMS, t),
-    [activeBuild, tacticalPlan.priorityItems, ITEMS, t]
+    () => buildPurchaseOrder(activeBuild, tacticalPlan.priorityItems, ITEMS, t, counterContext),
+    [activeBuild, tacticalPlan.priorityItems, ITEMS, t, counterContext]
   );
 
   const purchaseCounters = useMemo(
-    () => getPurchaseCounters(tacticalPlan.priorityItems),
-    [tacticalPlan.priorityItems]
+    () => getPurchaseCounters(tacticalPlan.priorityItems, counterContext),
+    [tacticalPlan.priorityItems, counterContext]
   );
 
   const isFull = isInventoryFull(inventoryStatus);
@@ -537,17 +566,23 @@ export function App() {
     [ownedItems, inventoryStatus]
   );
   const investment = useMemo(() => investmentProgress(buildSpikeOrder, investedItems), [buildSpikeOrder, investedItems]);
+  // A sale that would drop a finished 4,800 spike is never suggested: the next weakest item is
+  const canSell = useCallback(
+    (soldId: string, itemId: string) => sellKeepsSpikes(investedItems, soldId, itemId),
+    [investedItems]
+  );
 
   const rawNextToBuyQueue = useMemo(() => {
     const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
     const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
     // The item each card will say to sell (inventory full) leaves before the spike is counted
     const soldItem = (q: QueueEntry[], itemId: string) => {
-      const plan = getSlotPlans(q.slice(0, 6), ownedItems, inventoryStatus, sellCandidates).get(itemId);
+      const plan = getSlotPlans(q.slice(0, 6), ownedItems, inventoryStatus, sellCandidates, canSell).get(itemId);
       return plan?.kind === 'sell' ? plan.itemId : undefined;
     };
-    return nudgeTowardKeySpike(queue, investedItems, investment, (itemId) => buyTimeS(itemId) || undefined, soldItem);
-  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investedItems, investment]);
+    const isKeyCore = (itemId: string) => (getHeroItemStat(myHeroId, itemId)?.pickRate ?? 0) >= KEY_CORE_PICK_RATE;
+    return nudgeTowardKeySpike(queue, investedItems, investment, (itemId) => buyTimeS(itemId) || undefined, soldItem, isKeyCore);
+  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investedItems, investment, canSell]);
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
@@ -574,12 +609,11 @@ export function App() {
   // What each displayed recommendation does to the inventory: an upgrade replaces its component; with a full
   // inventory, the other ones each need an owned item sold first (the weakest for #1, the next one for #2...)
   const slotPlans = useMemo(
-    () => getSlotPlans(nextToBuyQueue.slice(0, 6), ownedItems, inventoryStatus, sellCandidates),
-    [nextToBuyQueue, ownedItems, inventoryStatus, sellCandidates]
+    () => getSlotPlans(nextToBuyQueue.slice(0, 6), ownedItems, inventoryStatus, sellCandidates, canSell),
+    [nextToBuyQueue, ownedItems, inventoryStatus, sellCandidates, canSell]
   );
 
-  // Match clock (extrapolated between two readings) and when the Mid Boss is back after a kill marked by hand
-  const clockS = board?.clock ? Math.floor(clockAt(board.clock, nowMs)) : undefined;
+  // When the Mid Boss is back after a kill marked by hand
   const midBossBack = midBossBackAt(midBoss);
   const midBossAlive = midBossBack === null || nowMs >= midBossBack;
 
@@ -723,6 +757,7 @@ export function App() {
     setInventoryStatus(null);
     storeFedEnemies([]);
     storeMidBoss(null);
+    setLaneOverLatched(false);
   }, [storeFedEnemies, storeMidBoss]);
 
   const boardJsonRef = useRef<string>(JSON.stringify(board));

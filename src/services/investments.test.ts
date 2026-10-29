@@ -219,6 +219,18 @@ describe('nudgeTowardKeySpike', () => {
     expect(nudgeTowardKeySpike(q, full, fullProgress, at, sold)).toBe(q);
   });
 
+  it('never moves a spike item above a key core item', () => {
+    const keyCore = new Set(['close_quarters']);
+    const isKeyCore = (id: string) => keyCore.has(id);
+    // #2 is a key core item standing between #1 and the spike item at #3
+    expect(nudgeTowardKeySpike(queue, owned, progress, (id) => times[id], undefined, isKeyCore)).toBe(queue);
+    // a key core item at #1 holds the spike item behind it too
+    const keyFirst = new Set(['extended_magazine']);
+    expect(nudgeTowardKeySpike(queue, owned, progress, (id) => times[id], undefined, (id) => keyFirst.has(id))).toBe(queue);
+    // without a key core item in front, the nudge still happens
+    expect(ids(nudgeTowardKeySpike(queue, owned, progress, (id) => times[id], undefined, () => false))[0]).toBe('long_range');
+  });
+
   it('does not reorder the build\'s queue when the target comes from the inventory', () => {
     const fromInventory = { ...progress, fromInventory: true };
     expect(nudgeTowardKeySpike(queue, owned, fromInventory, (id) => times[id])).toBe(queue);

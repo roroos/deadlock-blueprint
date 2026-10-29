@@ -3,6 +3,7 @@
  * build, the counters and what the player owns (tested in recommendations.test.ts).
  */
 import { DeadlockItem, HeroBuildArchetype, ITEMS_DB, TacticalRecommendation } from '../data/deadlockData';
+import type { LaneOutlook, MatchupStance } from '../data/matchupStats';
 import type { Translate } from '../i18n';
 
 export const INVENTORY_SLOTS = 12;
@@ -60,12 +61,55 @@ export function effectiveOwnedSet(ownedItems: string[]): Set<string> {
 const isStrongCounter = (r: TacticalRecommendation['priorityItems'][number]) =>
   r.urgency === 'Critique (En Face / Lane)' || r.reasons.length >= 2;
 
+/** Laning ends at 10 min: the game clock when it is read, otherwise about what players have spent by then. */
+export const LANE_END_S = 600;
+export const LANE_END_SOULS = 6400;
+export const isLaneOver = (clockS: number | undefined, soulsSpent: number) =>
+  clockS !== undefined ? clockS >= LANE_END_S : soulsSpent >= LANE_END_SOULS;
+
+/**
+ * A lane threat worth a counter: a lane enemy to avoid (my real win rate against it), a lane enemy marked fed, or a
+ * hard lane. Measured on 1,760 simulated lineups, every lane enemy's counters are "critical", so a lane counter
+ * was queued in 98% of games while only 28% had a lane enemy to avoid.
+ */
+export function hasLaneThreat(
+  alerts: { isInMyLane: boolean; isFed: boolean; stance?: MatchupStance }[],
+  outlook?: LaneOutlook
+): boolean {
+  return outlook === 'hard' || alerts.some((a) => a.isInMyLane && (a.isFed || a.stance === 'avoid'));
+}
+
+export interface CounterContext {
+  /** A real lane threat (hasLaneThreat): without one, lane-only counters stay out of the queue. Default: yes */
+  laneThreat?: boolean;
+  /** Laning is over (isLaneOver): a Tier 1-2 lane-only counter leaves the queue. Default: no */
+  laneOver?: boolean;
+}
+
+/**
+ * A counter that only answers my lane (critical, every reason a lane one: "[LANE]" or an unprefixed lane tip, none
+ * "[TEAM]" nor fed "🔥"): the lane items of the first minutes. An item against both lane enemies (two reasons)
+ * is still a lane counter; one that also answers a team enemy or a fed enemy is not.
+ */
+const isLaneOnlyCounter = (r: TacticalRecommendation['priorityItems'][number]) =>
+  r.urgency === 'Critique (En Face / Lane)' &&
+  r.reasons.every((reason) => !reason.startsWith('🔥') && !reason.startsWith('[TEAM]'));
+
 /**
  * The counter items included in the purchase queue and highlighted in the interface: at most one Tier 1-2
- * and one Tier 3-4, so that following the queue still follows the build.
+ * and one Tier 3-4, so that following the queue still follows the build. A lane-only counter needs a real lane
+ * threat, and a Tier 1-2 one leaves once laning is over (a lane counter bought at a median 15 min was a counter to
+ * a lane that was over). Counters against a fed enemy or against two enemies are unaffected.
  */
-export const getPurchaseCounters = (priorityItems: TacticalRecommendation['priorityItems']) => {
-  const strong = priorityItems.filter(isStrongCounter);
+export const getPurchaseCounters = (
+  priorityItems: TacticalRecommendation['priorityItems'],
+  { laneThreat = true, laneOver = false }: CounterContext = {}
+) => {
+  const strong = priorityItems.filter(
+    (r) =>
+      isStrongCounter(r) &&
+      (!isLaneOnlyCounter(r) || (laneThreat && !(laneOver && r.item.tier <= 2)))
+  );
   return [...strong.filter((r) => r.item.tier <= 2).slice(0, 1), ...strong.filter((r) => r.item.tier >= 3).slice(0, 1)];
 };
 
@@ -78,11 +122,12 @@ export function buildPurchaseOrder(
   build: HeroBuildArchetype,
   priorityItems: TacticalRecommendation['priorityItems'],
   items: Record<string, DeadlockItem>,
-  t: Translate
+  t: Translate,
+  counterContext?: CounterContext
 ): QueueEntry[] {
   const queue: QueueEntry[] = [];
   const seen = new Set<string>();
-  const counters = getPurchaseCounters(priorityItems);
+  const counters = getPurchaseCounters(priorityItems, counterContext);
   const phaseOf = (id: string): QueueEntry['phase'] =>
     (['early', 'mid', 'late', 'situational'] as const).find((p) => build.phases[p].includes(id));
 
@@ -199,12 +244,15 @@ export function withLockedFirst(queue: QueueEntry[], lockedItemId: string | null
 /**
  * What each shown recommendation does to the inventory: an upgrade replaces its component; with a full
  * inventory, the other ones each need an owned item sold first (the weakest for #1, the next one for #2...).
+ * `canSell` refuses a sale for an item: the weakest item that could be sold is skipped when selling it would drop
+ * a finished 4,800 spike (services/investments.ts › sellKeepsSpikes), and the next one is suggested.
  */
 export function getSlotPlans(
   shown: QueueEntry[],
   ownedItems: string[],
   status: InventoryStatus | null,
-  sellCandidates: string[]
+  sellCandidates: string[],
+  canSell?: (soldId: string, itemId: string) => boolean
 ): Map<string, SlotPlan> {
   const plans = new Map<string, SlotPlan>();
   const upgradedComponents = new Set<string>();
@@ -218,10 +266,11 @@ export function getSlotPlans(
   if (isInventoryFull(status)) {
     // Never sell a component that one of the shown upgrades is about to consume
     const toSell = sellCandidates.filter((id) => !upgradedComponents.has(id));
-    let nextSell = 0;
+    const sold = new Set<string>();
     for (const entry of shown) {
       if (plans.has(entry.item.id)) continue;
-      const sellId = toSell[nextSell++];
+      const sellId = toSell.find((id) => !sold.has(id) && (canSell?.(id, entry.item.id) ?? true));
+      if (sellId) sold.add(sellId);
       plans.set(entry.item.id, sellId ? { kind: 'sell', itemId: sellId } : { kind: 'full' });
     }
   }

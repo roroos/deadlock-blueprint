@@ -21,6 +21,17 @@ one category to 4,800, then the next, then the last, and the buy tab follows tha
 - **What counts**: the owned items, except those marked by hand ("Skip" or a click) that the scanner does not see
   in the inventory: skipping an item is not buying it. Without an inventory read, the hand-marked items count.
 
+- **Sales keep finished spikes.** With a full inventory the card suggests selling the weakest item, but never one
+  whose sale drops a category from 4,800 to below it (unless the new item brings it back): the next weakest is
+  suggested, or "inventory full" when every candidate would. Measured on 1,760 simulated games: 2% of the sales did
+  (9% of the games), now none.
+- **Key core items keep their place.** An item bought in 70% or more of the hero's games (`KEY_CORE_PICK_RATE`,
+  about 6 per hero) is never overtaken: a spike item does not move above one, whatever its buy time.
+- **Lane counters need a lane threat and leave with laning.** A counter that only answers my lane is queued only
+  when a lane enemy is to be avoided (my real win rate against it), is marked fed, or the lane is hard; a Tier 1-2
+  one is dropped at 10 min (the clock, else about 6,400 souls spent; latched for the match). Counters against a
+  fed enemy, or against two enemies or more, are unaffected. See `hasLaneThreat`, `isLaneOver` in
+  `src/services/recommendations.ts`.
 - **The player's own build wins.** A category not at 4,800 yet, with at least 2,400 souls and 1,600 more than the
   build's next category, becomes the target: the line lists it after the finished spikes, its items get the badge,
   and the queue is not reordered (it follows the build the player left). In a recorded Infernus game the build went

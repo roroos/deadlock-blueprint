@@ -21,8 +21,15 @@ one category to 4,800, then the next, then the last, and the buy tab follows tha
 - **What counts**: the owned items, except those marked by hand ("Skip" or a click) that the scanner does not see
   in the inventory: skipping an item is not buying it. Without an inventory read, the hand-marked items count.
 
-The spike order comes from the build: buying its early, mid and late items in order, the order the categories
-reach 4,800 (categories it never takes there come last, most souls first). An upgrade counts at its full price
+- **The player's own build wins.** A category not at 4,800 yet, with at least 2,400 souls and 1,600 more than the
+  build's next category, becomes the target: the line lists it after the finished spikes, its items get the badge,
+  and the queue is not reordered (it follows the build the player left). In a recorded Infernus game the build went
+  spirit first, the player vitality then weapon, with spirit at 1,600 most of the game.
+
+The spike order comes from the build: buying its early, mid and late items **in the order players usually buy them**
+(`itemStats` buy times), the order the categories reach 4,800 (categories it never takes there come last, most souls
+first). The phases are tiers, not times: walking them in order changed the first spike of 18 of 44 meta builds
+(Vindicta: weapon instead of spirit, while players buy Rapid Recharge at ~11 min). An upgrade counts at its full price
 and its consumed component does not count again (`src/services/investments.ts`).
 
 ## Where the numbers come from

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { ITEMS_DB } from '../data/deadlockData';
+import { HEROES_DB, ITEMS_DB, getHeroItemStat } from '../data/deadlockData';
+import { readJournal, replayJournal } from '../test/journalReplay';
 import {
+  inBuyOrder,
   investedSouls,
   investmentItems,
   investmentProgress,
@@ -52,6 +54,26 @@ describe('investmentItems', () => {
   });
 });
 
+describe('inBuyOrder', () => {
+  it('orders the build by usual buy time, not by phase', () => {
+    const times: Record<string, number> = { extra_spirit: 160, tesla_bullets: 600, long_range: 1300 };
+    expect(inBuyOrder(['extra_spirit', 'long_range', 'tesla_bullets'], (id) => times[id])).toEqual([
+      'extra_spirit',
+      'tesla_bullets',
+      'long_range',
+    ]);
+  });
+
+  it('keeps an item without a buy time after the item before it', () => {
+    const times: Record<string, number> = { extra_spirit: 900, long_range: 300 };
+    expect(inBuyOrder(['extra_spirit', 'mystic_slow', 'long_range'], (id) => times[id])).toEqual([
+      'long_range',
+      'extra_spirit',
+      'mystic_slow',
+    ]);
+  });
+});
+
 describe('spikeOrder', () => {
   it('follows the order the build takes each category to 4,800', () => {
     expect(spikeOrder(BUILD)).toEqual(['weapon', 'spirit', 'vitality']);
@@ -88,6 +110,25 @@ describe('investmentProgress', () => {
     const progress = investmentProgress(order, ['metal_skin', 'healbane']);
     expect(progress.target?.category).toBe('weapon');
     expect(progress.spikeNumber).toBe(2);
+  });
+
+  it('follows the category the player committed to: 2,400+ souls and 1,600 ahead of the build\'s next one', () => {
+    const spiritFirst: ('spirit' | 'weapon' | 'vitality')[] = ['spirit', 'weapon', 'vitality'];
+    const committed = investmentProgress(spiritFirst, ['tesla_bullets']);
+    expect(committed.target?.category).toBe('weapon');
+    expect(committed.fromInventory).toBe(true);
+    expect(committed.categories.map((c) => c.category)).toEqual(['weapon', 'spirit', 'vitality']);
+    expect(investmentProgress(spiritFirst, ['tesla_bullets', 'mystic_slow']).target?.category).toBe('weapon');
+    // Not far enough ahead, or not enough souls yet: the build's order holds
+    const close = investmentProgress(spiritFirst, ['tesla_bullets', 'mystic_slow', 'extra_spirit']);
+    expect(close.target?.category).toBe('spirit');
+    expect(close.fromInventory).toBe(false);
+    expect(investmentProgress(spiritFirst, ['long_range']).target?.category).toBe('spirit');
+  });
+
+  it('lists the categories at 4,800 first, then the target', () => {
+    const progress = investmentProgress(order, ['metal_skin', 'healbane']);
+    expect(progress.categories.map((c) => c.category)).toEqual(['vitality', 'weapon', 'spirit']);
   });
 
   it('has no target once all three are at 4,800', () => {
@@ -143,7 +184,6 @@ describe('isSpikeWorthIt', () => {
 describe('nudgeTowardKeySpike', () => {
   const owned = ['tesla_bullets'];
   const progress = investmentProgress(spikeOrder(BUILD), owned);
-  const spiritFirst = investmentProgress(['spirit', 'weapon', 'vitality'], owned);
   const queue = [entry('extended_magazine'), entry('close_quarters'), entry('long_range'), entry('heroic_aura')];
   const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
 
@@ -157,7 +197,11 @@ describe('nudgeTowardKeySpike', () => {
   });
 
   it('only nudges toward the target category', () => {
-    expect(nudgeTowardKeySpike(queue, owned, spiritFirst, (id) => times[id])).toBe(queue);
+    // Spirit 2,400 is close enough to weapon 3,200 for the build's spirit-first order to hold
+    const spiritOwned = [...owned, 'mystic_slow', 'extra_spirit'];
+    const spiritTarget = investmentProgress(['spirit', 'weapon', 'vitality'], spiritOwned);
+    expect(spiritTarget.fromInventory).toBe(false);
+    expect(nudgeTowardKeySpike(queue, spiritOwned, spiritTarget, (id) => times[id])).toBe(queue);
   });
 
   it('keeps the order when the spike item is usually bought much later', () => {
@@ -175,8 +219,38 @@ describe('nudgeTowardKeySpike', () => {
     expect(nudgeTowardKeySpike(q, full, fullProgress, at, sold)).toBe(q);
   });
 
+  it('does not reorder the build\'s queue when the target comes from the inventory', () => {
+    const fromInventory = { ...progress, fromInventory: true };
+    expect(nudgeTowardKeySpike(queue, owned, fromInventory, (id) => times[id])).toBe(queue);
+  });
+
   it('never reaches past #3', () => {
     const late = [entry('extended_magazine'), entry('close_quarters'), entry('monster_rounds'), entry('long_range')];
     expect(nudgeTowardKeySpike(late, owned, progress, () => 600)).toBe(late);
+  });
+});
+
+describe('recorded Infernus game (sapphire_infernus_full)', () => {
+  // The player went vitality, then weapon; the meta build goes spirit first. Spirit stayed at 1,600 most of the game.
+  const build = HEROES_DB.find((h) => h.id === 'infernus')!.builds[0];
+  const order = spikeOrder(
+    inBuyOrder([...build.phases.early, ...build.phases.mid, ...build.phases.late], (id) =>
+      getHeroItemStat('infernus', id)?.buyTimeS
+    )
+  );
+  const steps = replayJournal(readJournal('tests/replays/sapphire_infernus_full.journal.log.gz'));
+  const targetAt = (minute: number) => {
+    const step = steps.find((s) => s.t - steps[0].t >= minute * 60_000)!;
+    return investmentProgress(order, step.state.ownedItems).target?.category;
+  };
+
+  it('starts from the build, spirit first', () => {
+    expect(order[0]).toBe('spirit');
+    expect(targetAt(5)).toBe('spirit');
+  });
+
+  it('follows vitality, then weapon, as the player built them', () => {
+    expect(targetAt(13)).toBe('vitality');
+    expect(targetAt(22)).toBe('weapon');
   });
 });

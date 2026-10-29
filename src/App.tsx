@@ -59,6 +59,7 @@ import {
   CHEAP_TOP_UP,
   CORE_SPIKES,
   KEY_SPIKE,
+  inBuyOrder,
   investmentItems,
   investmentProgress,
   isSpikeWorthIt,
@@ -514,10 +515,17 @@ export function App() {
   // Owned items plus the components they consumed (owning Greater Expansion means Mystic Expansion is done)
   const effectiveOwned = useMemo(() => effectiveOwnedSet(ownedItems), [ownedItems]);
 
-  // The build takes one category to 4,800 souls, then the next, then the last (services/investments.ts)
+  // The build takes one category to 4,800 souls, then the next, then the last, in the order players buy its items
+  // (services/investments.ts); a category the player committed to replaces the build's next one
   const buildSpikeOrder = useMemo(
-    () => spikeOrder([...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late]),
-    [activeBuild]
+    () =>
+      spikeOrder(
+        inBuyOrder(
+          [...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late],
+          (itemId) => getHeroItemStat(myHeroId, itemId)?.buyTimeS || undefined
+        )
+      ),
+    [activeBuild, myHeroId]
   );
   // Hand-marked items ("Skip") count only once the scanner sees them (services/investments.ts)
   const investedItems = useMemo(

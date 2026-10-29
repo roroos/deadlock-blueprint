@@ -96,6 +96,7 @@ export const MESSAGES_EN: Messages = {
   'invest.label': (souls) => `Investment spikes: ${souls} souls per category, one at a time`,
   'invest.allDone': (souls) => `All three ${souls} investment spikes reached`,
   'invest.pace': (n, minute) => `Spike ${n}: high-rank players have it by ~${minute} min`,
+  'invest.coreDone': 'Main spikes done: the third is only worth a cheap top-up (800 souls or less)',
   'invest.behind': 'behind their pace',
   'invest.title':
     'Owned items in one shop category give a bonus at fixed soul thresholds, the largest jump at 4,800. Builds and high-rank players take one category to 4,800, then the next, then the last. Timings: median of rank 81+ players in normal games.',

@@ -15,6 +15,13 @@ export const KEY_SPIKE = 4800;
  */
 export const HIGH_RANK_SPIKE_MINUTES = [10.2, 15.3, 19.9];
 
+/**
+ * The first two 4,800s are the ones worth bending the order for. After them, the third only when it is a small
+ * top-up: an item that adds at most this many souls to the category.
+ */
+export const CORE_SPIKES = 2;
+const CHEAP_TOP_UP = 800;
+
 /** A spike item may move to #1 only when players usually buy it this close to the current #1 (seconds). */
 const NUDGE_WINDOW_S = 120;
 
@@ -83,16 +90,27 @@ export function keySpikeReached(itemId: string, ownedItems: string[]): ItemCateg
 }
 
 /**
- * Gentle nudge: when the #1 does not take the target category to 4,800 but #2 or #3 does and players usually
- * buy it at about the same time, that item becomes #1. The rest of the queue keeps its order.
+ * Whether this item is worth pointing out: it takes the target category to 4,800, and that is one of the first
+ * two spikes or, for the third, a small top-up.
+ */
+export function isSpikeWorthIt(itemId: string, ownedItems: string[], progress: InvestmentProgress): boolean {
+  const target = progress.target?.category;
+  if (!target || keySpikeReached(itemId, ownedItems) !== target) return false;
+  if (progress.spikeNumber <= CORE_SPIKES) return true;
+  return investedSouls([...ownedItems, itemId])[target] - investedSouls(ownedItems)[target] <= CHEAP_TOP_UP;
+}
+
+/**
+ * Gentle nudge: when the #1 is not worth a spike but #2 or #3 is (isSpikeWorthIt) and players usually buy it
+ * at about the same time, that item becomes #1. The rest of the queue keeps its order.
  */
 export function nudgeTowardKeySpike(
   queue: QueueEntry[],
   ownedItems: string[],
-  target: ItemCategory | null,
+  progress: InvestmentProgress,
   buyTimeS: (itemId: string) => number | undefined
 ): QueueEntry[] {
-  const reachesTarget = (id: string) => target !== null && keySpikeReached(id, ownedItems) === target;
+  const reachesTarget = (id: string) => isSpikeWorthIt(id, ownedItems, progress);
   if (queue.length < 2 || reachesTarget(queue[0].item.id)) return queue;
   const firstTime = buyTimeS(queue[0].item.id);
   if (firstTime === undefined) return queue;

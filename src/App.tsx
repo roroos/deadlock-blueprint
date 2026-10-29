@@ -55,7 +55,14 @@ import {
   isInventoryFull,
   withLockedFirst,
 } from './services/recommendations';
-import { KEY_SPIKE, investmentProgress, keySpikeReached, nudgeTowardKeySpike, spikeOrder } from './services/investments';
+import {
+  CORE_SPIKES,
+  KEY_SPIKE,
+  investmentProgress,
+  isSpikeWorthIt,
+  nudgeTowardKeySpike,
+  spikeOrder,
+} from './services/investments';
 import {
   isMatchLogEnabled,
   logEvent,
@@ -511,13 +518,12 @@ export function App() {
     [activeBuild]
   );
   const investment = useMemo(() => investmentProgress(buildSpikeOrder, ownedItems), [buildSpikeOrder, ownedItems]);
-  const spikeTarget = investment.target?.category ?? null;
 
   const rawNextToBuyQueue = useMemo(() => {
     const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
     const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
-    return nudgeTowardKeySpike(queue, ownedItems, spikeTarget, (itemId) => buyTimeS(itemId) || undefined);
-  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, spikeTarget]);
+    return nudgeTowardKeySpike(queue, ownedItems, investment, (itemId) => buyTimeS(itemId) || undefined);
+  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investment]);
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
@@ -1042,10 +1048,10 @@ export function App() {
     );
   };
 
-  /** "Reaches the 4,800 Spirit spike" under an item that takes a category to the key investment bonus. */
+  /** "Reaches the 4,800 Spirit spike" under an item that finishes the next spike worth it (isSpikeWorthIt). */
   const renderSpikeHint = (itemId: string, compact = false) => {
-    const category = keySpikeReached(itemId, ownedItems);
-    if (!category) return null;
+    const category = investment.target?.category;
+    if (!category || !isSpikeWorthIt(itemId, ownedItems, investment)) return null;
     return (
       <div
         className={`flex items-center gap-1.5 rounded-lg border font-bold bg-amber-500/15 border-amber-400/40 text-amber-200 ${
@@ -1072,8 +1078,12 @@ export function App() {
         </p>
       );
     }
-    const behind = clockS !== undefined && clockS > minute * 60;
-    const pace = (
+    // Past the first two spikes, the third is only worth a cheap top-up: no pace to keep
+    const coreDone = spikeNumber > CORE_SPIKES;
+    const behind = !coreDone && clockS !== undefined && clockS > minute * 60;
+    const pace = coreDone ? (
+      <span className="text-slate-400">{t('invest.coreDone')}</span>
+    ) : (
       <span className={behind ? 'font-bold text-amber-300' : 'text-slate-400'}>
         {t('invest.pace', spikeNumber, String(Math.round(minute)))}
         {behind && ` · ${t('invest.behind')}`}

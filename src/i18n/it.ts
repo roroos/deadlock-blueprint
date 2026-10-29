@@ -96,6 +96,7 @@ export const MESSAGES_IT: Messages = {
   'invest.label': (souls) => `Soglie d'investimento: ${souls} anime per categoria, una alla volta`,
   'invest.allDone': (souls) => `Tutte e tre le soglie da ${souls} raggiunte`,
   'invest.pace': (n, minute) => `Soglia ${n}: i giocatori di alto rango ce l'hanno verso ${minute} min`,
+  'invest.coreDone': 'Soglie principali fatte: la terza vale solo un piccolo completamento (800 anime o meno)',
   'invest.behind': 'in ritardo rispetto a loro',
   'invest.title':
     "Gli oggetti di una stessa categoria del negozio danno un bonus a soglie fisse di anime, il salto più grande a 4.800. Le build e i giocatori di alto rango portano una categoria a 4.800, poi la successiva, poi l'ultima. Tempi: mediana dei giocatori di rango 81+ in partite normali.",

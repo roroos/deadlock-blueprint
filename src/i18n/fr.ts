@@ -105,6 +105,7 @@ export const MESSAGES_FR = {
   'invest.label': (souls: string) => `Paliers d'investissement : ${souls} Âmes par catégorie, une à la fois`,
   'invest.allDone': (souls: string) => `Les trois paliers de ${souls} sont atteints`,
   'invest.pace': (n: number, minute: string) => `Palier ${n} : les joueurs de haut rang l'ont vers ${minute} min`,
+  'invest.coreDone': "Paliers principaux faits : le troisième ne vaut qu'un petit complément (800 Âmes ou moins)",
   'invest.behind': 'en retard sur eux',
   'invest.title':
     "Les objets d'une même catégorie de la boutique donnent un bonus à des paliers d'Âmes fixes, le plus gros saut à 4 800. Les builds et les joueurs de haut rang amènent une catégorie à 4 800, puis la suivante, puis la dernière. Temps : médiane des joueurs de rang 81+ en partie normale.",

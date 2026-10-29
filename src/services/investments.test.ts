@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { ITEMS_DB } from '../data/deadlockData';
-import { investedSouls, investmentProgress, keySpikeReached, nudgeTowardKeySpike, spikeOrder } from './investments';
+import {
+  investedSouls,
+  investmentProgress,
+  isSpikeWorthIt,
+  keySpikeReached,
+  nudgeTowardKeySpike,
+  spikeOrder,
+} from './investments';
 import { QueueEntry } from './recommendations';
 
 const entry = (id: string): QueueEntry => ({ item: ITEMS_DB[id], reason: '' });
@@ -89,13 +96,35 @@ describe('keySpikeReached', () => {
   });
 });
 
+describe('isSpikeWorthIt', () => {
+  const order = spikeOrder(BUILD);
+  const worthIt = (itemId: string, owned: string[]) => isSpikeWorthIt(itemId, owned, investmentProgress(order, owned));
+
+  it('points out an item finishing the first or second spike', () => {
+    expect(worthIt('long_range', ['tesla_bullets'])).toBe(true);
+    expect(worthIt('slowing_hex', ['tesla_bullets', 'long_range', 'mystic_slow', 'mystic_vulnerability'])).toBe(true);
+  });
+
+  it('ignores a spike outside the target category', () => {
+    expect(worthIt('metal_skin', ['tesla_bullets', 'healbane'])).toBe(false);
+  });
+
+  it('points out the third spike only for a top-up of 800 souls or less', () => {
+    const twoSpikes = ['tesla_bullets', 'long_range', 'slowing_hex', 'mystic_slow', 'mystic_vulnerability'];
+    expect(worthIt('metal_skin', [...twoSpikes, 'healbane'])).toBe(false);
+    expect(worthIt('extra_health', [...twoSpikes, 'metal_skin', 'extra_regen'])).toBe(true);
+  });
+});
+
 describe('nudgeTowardKeySpike', () => {
   const owned = ['tesla_bullets'];
+  const progress = investmentProgress(spikeOrder(BUILD), owned);
+  const spiritFirst = investmentProgress(['spirit', 'weapon', 'vitality'], owned);
   const queue = [entry('extended_magazine'), entry('close_quarters'), entry('long_range'), entry('heroic_aura')];
   const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
 
   it('moves an item taking the target to 4,800 from #2 or #3 to #1 when it is usually bought about as early', () => {
-    expect(ids(nudgeTowardKeySpike(queue, owned, 'weapon', (id) => times[id]))).toEqual([
+    expect(ids(nudgeTowardKeySpike(queue, owned, progress, (id) => times[id]))).toEqual([
       'long_range',
       'extended_magazine',
       'close_quarters',
@@ -104,15 +133,15 @@ describe('nudgeTowardKeySpike', () => {
   });
 
   it('only nudges toward the target category', () => {
-    expect(nudgeTowardKeySpike(queue, owned, 'spirit', (id) => times[id])).toBe(queue);
+    expect(nudgeTowardKeySpike(queue, owned, spiritFirst, (id) => times[id])).toBe(queue);
   });
 
   it('keeps the order when the spike item is usually bought much later', () => {
-    expect(nudgeTowardKeySpike(queue, owned, 'weapon', (id) => ({ ...times, long_range: 900 })[id])).toBe(queue);
+    expect(nudgeTowardKeySpike(queue, owned, progress, (id) => ({ ...times, long_range: 900 })[id])).toBe(queue);
   });
 
   it('never reaches past #3', () => {
     const late = [entry('extended_magazine'), entry('close_quarters'), entry('monster_rounds'), entry('long_range')];
-    expect(nudgeTowardKeySpike(late, owned, 'weapon', () => 600)).toBe(late);
+    expect(nudgeTowardKeySpike(late, owned, progress, () => 600)).toBe(late);
   });
 });

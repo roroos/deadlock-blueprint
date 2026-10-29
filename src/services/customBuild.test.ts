@@ -299,7 +299,7 @@ describe('buildCustomPurchaseOrder', () => {
     expect(order[3]).toMatchObject({ group: 'core', reason: 'Build: core' });
   });
 
-  it('places the Tier 1-2 counter after the first two items, the Tier 3-4 one after two Tier 2+ items', () => {
+  it('places the Tier 1-2 counter after the first group, the Tier 3-4 one after two Tier 2+ items', () => {
     const counters = getCustomCounters(
       build,
       [alert('ivy', ['healbane'], { isInMyLane: true }), alert('seven', ['spirit_resilience'], { isFed: true })],
@@ -311,15 +311,46 @@ describe('buildCustomPurchaseOrder', () => {
     expect(order.map((e) => e.item.id)).toEqual([
       'extended_magazine',
       'monster_rounds',
-      'healbane',
       'extra_regen',
+      'healbane',
       'slowing_bullets',
       'tesla_bullets',
       'spirit_resilience',
       'quicksilver_reload',
       'lucky_shot',
     ]);
-    expect(order[2]).toMatchObject({ group: 'situational', reason: "Build's situational, vs IVY" });
+    expect(order[3]).toMatchObject({ group: 'situational', reason: "Build's situational, vs IVY" });
+  });
+
+  it('places a counter by when players usually buy it, never among the first group', () => {
+    const counters = getCustomCounters(
+      build,
+      [alert('ivy', ['healbane'], { isInMyLane: true }), alert('seven', ['spirit_resilience'], { isFed: true })],
+      [],
+      new Set(),
+      ITEMS_DB
+    );
+    const times: Record<string, number> = {
+      extended_magazine: 150,
+      healbane: 200, // usually early, still after the lane group
+      slowing_bullets: 500,
+      tesla_bullets: 700,
+      quicksilver_reload: 900,
+      spirit_resilience: 1400, // usually late: after everything bought before it
+      lucky_shot: 1200,
+    };
+    const order = buildCustomPurchaseOrder(build, counters, ITEMS_DB, enemyName, t, (id) => times[id]);
+    expect(order.map((e) => e.item.id)).toEqual([
+      'extended_magazine',
+      'monster_rounds',
+      'extra_regen',
+      'healbane',
+      'slowing_bullets',
+      'tesla_bullets',
+      'quicksilver_reload',
+      'lucky_shot',
+      'spirit_resilience',
+    ]);
   });
 
   it('labels an outside counter and an ordered item that answers a threat', () => {

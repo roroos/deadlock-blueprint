@@ -637,13 +637,20 @@ export function App() {
     () =>
       customBuild && customCounters
         ? getNextPurchases(
-            buildCustomPurchaseOrder(customBuild, customCounters, ITEMS, (id) => HEROES.find((h) => h.id === id)?.name ?? id, t),
+            buildCustomPurchaseOrder(
+              customBuild,
+              customCounters,
+              ITEMS,
+              (id) => HEROES.find((h) => h.id === id)?.name ?? id,
+              t,
+              (id) => getHeroItemStat(myHeroId, id)?.buyTimeS || undefined
+            ),
             ownedItems,
             inventoryStatus,
             sellCandidates
           )
         : metaQueue,
-    [customBuild, customCounters, ITEMS, HEROES, t, ownedItems, inventoryStatus, sellCandidates, metaQueue]
+    [customBuild, customCounters, ITEMS, HEROES, t, myHeroId, ownedItems, inventoryStatus, sellCandidates, metaQueue]
   );
 
   // Counters placed in the queue (shown in orange)
@@ -659,7 +666,7 @@ export function App() {
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
-  const lockKey = `${myHeroId}|${activeBuild.id}`;
+  const lockKey = `${myHeroId}|${customBuild ? `custom-${customBuild.buildId}` : activeBuild.id}`;
   const lockedItemId = lockedNext?.key === lockKey ? lockedNext.itemId : null;
 
   useEffect(() => {

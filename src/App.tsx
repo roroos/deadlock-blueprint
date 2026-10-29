@@ -22,6 +22,7 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  ItemCategory,
   LaneColor,
   LaneMode,
   TacticalRecommendation,
@@ -56,7 +57,7 @@ import {
   isInventoryFull,
   withLockedFirst,
 } from './services/recommendations';
-import { KEY_SPIKE, investmentProgress, nudgeTowardKeySpike, reachesKeySpike } from './services/investments';
+import { KEY_SPIKE, investmentProgress, keySpikeReached, nudgeTowardKeySpike, spikeOrder } from './services/investments';
 import {
   isMatchLogEnabled,
   logEvent,
@@ -80,7 +81,7 @@ import {
 import type { AppInfo, ElectronSourceInfo, UpdateStatus } from './electron';
 import { ItemCard } from './components/ItemCard';
 import { HeroPortraitIcon, ItemArtworkIcon, PowerIcon } from './components/DeadlockIcons';
-import { CopyNameButton, ShopTabMarker } from './components/ShopHelpers';
+import { CopyNameButton, SHOP_TABS, ShopTabMarker } from './components/ShopHelpers';
 import { SettingsModal } from './components/SettingsModal';
 import { OnboardingModal } from './components/OnboardingModal';
 import { ReportContent, ReportDialog } from './components/ReportDialog';
@@ -176,6 +177,13 @@ const NOW_STYLE: Record<NowAdvice['kind'], { icon: string; className: string }> 
   help: { icon: '🤝', className: 'text-sky-300' },
   focus: { icon: '🎯', className: 'text-amber-300' },
   avoid: { icon: '🚫', className: 'text-red-300' },
+};
+
+// Investment bars in the shop tab colours
+const SPIKE_BAR: Record<ItemCategory, string> = {
+  weapon: 'bg-orange-400',
+  vitality: 'bg-emerald-400',
+  spirit: 'bg-purple-400',
 };
 
 // My hero is auto-detected once per match, then locked (persisted so a restart mid-match keeps it)
@@ -567,16 +575,27 @@ export function App() {
     [inventoryStatus, activeBuild, tacticalPlan.priorityItems]
   );
 
-  // Souls invested in the build's main category, and the next milestone high-rank players reach (services/investments.ts)
-  const investment = useMemo(() => investmentProgress(activeBuild, ownedItems), [activeBuild, ownedItems]);
+  // The build takes one category to 4,800 souls, then the next, then the last (services/investments.ts).
+  // A custom build's order is its author's groups, situational ones left out.
+  const buildSpikeOrder = useMemo(
+    () =>
+      spikeOrder(
+        customBuild
+          ? customBuild.groups.filter((g) => !g.isSituational).flatMap((g) => g.itemIds)
+          : [...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late]
+      ),
+    [customBuild, activeBuild]
+  );
+  const investment = useMemo(() => investmentProgress(buildSpikeOrder, ownedItems), [buildSpikeOrder, ownedItems]);
+  const spikeTarget = investment.target?.category ?? null;
 
   const rawNextToBuyQueue = useMemo(() => {
     // A custom build keeps its author's order: no buy-time sort, no spike nudge
     if (customBuild) return getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates);
     const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
     const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
-    return nudgeTowardKeySpike(queue, ownedItems, investment.category, (itemId) => buyTimeS(itemId) || undefined);
-  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investment.category, customBuild]);
+    return nudgeTowardKeySpike(queue, ownedItems, spikeTarget, (itemId) => buyTimeS(itemId) || undefined);
+  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, spikeTarget, customBuild]);
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
@@ -1202,9 +1221,10 @@ export function App() {
     );
   };
 
-  /** "Reaches the 4,800 spike" under the item that takes the main category to the key investment bonus. */
+  /** "Reaches the 4,800 Spirit spike" under an item that takes a category to the key investment bonus. */
   const renderSpikeHint = (itemId: string, compact = false) => {
-    if (!reachesKeySpike(itemId, ownedItems, investment.category)) return null;
+    const category = keySpikeReached(itemId, ownedItems);
+    if (!category) return null;
     return (
       <div
         className={`flex items-center gap-1.5 rounded-lg border font-bold bg-amber-500/15 border-amber-400/40 text-amber-200 ${
@@ -1213,44 +1233,70 @@ export function App() {
         title={t('invest.spikeTitle')}
       >
         <TrendingUp className="w-3 h-3 shrink-0" />
-        <span>{t('invest.spike', formatNumber(KEY_SPIKE))}</span>
+        <span>{t('invest.spike', t(`category.${category}`), formatNumber(KEY_SPIKE))}</span>
       </div>
     );
   };
 
-  /** Main-category investment: souls owned, the next milestone and when high-rank players reach it. */
+  /**
+   * The three 4,800 spikes in the build's order: souls in each category, the one to finish next and when
+   * high-rank players have that many. Compact (overlay): the next one only.
+   */
   const renderInvestment = (compact = false) => {
-    const { category, souls, next } = investment;
-    const categoryName = t(`category.${category}`);
-    if (!next) {
+    const { categories, target, spikeNumber, minute } = investment;
+    if (!target || minute === null) {
       return (
         <p className="text-small text-slate-400" title={t('invest.title')}>
-          {t('invest.done', categoryName, formatNumber(souls))}
+          {t('invest.allDone', formatNumber(KEY_SPIKE))}
         </p>
       );
     }
-    const behind = clockS !== undefined && clockS > next.minute * 60;
-    const fill = Math.min(100, (souls / next.souls) * 100);
-    return (
-      <div className="space-y-1" title={t('invest.title')}>
-        <div className="flex items-baseline justify-between gap-2 flex-wrap text-small">
-          <span className="font-bold text-slate-200">
-            {t('invest.progress', categoryName, formatNumber(souls), formatNumber(next.souls))}
-            {next.souls === KEY_SPIKE && <span className="text-amber-300"> · {t('invest.keySpike')}</span>}
-          </span>
-          {!compact && (
-            <span className={behind ? 'font-bold text-amber-300' : 'text-slate-400'}>
-              {t('invest.pace', String(Math.round(next.minute)))}
-              {behind && ` · ${t('invest.behind')}`}
+    const behind = clockS !== undefined && clockS > minute * 60;
+    const pace = (
+      <span className={behind ? 'font-bold text-amber-300' : 'text-slate-400'}>
+        {t('invest.pace', spikeNumber, String(Math.round(minute)))}
+        {behind && ` · ${t('invest.behind')}`}
+      </span>
+    );
+    const segment = (c: (typeof categories)[number], index: number) => {
+      const { Icon, className } = SHOP_TABS[c.category];
+      const isTarget = c === target;
+      return (
+        <div key={c.category} className={`flex-1 min-w-0 space-y-1 ${isTarget || c.done ? '' : 'opacity-60'}`}>
+          <div className="flex items-center justify-between gap-1 text-small">
+            <span className={`flex items-center gap-1 font-bold ${className}`}>
+              {!compact && <span className="text-slate-500">{index + 1}</span>}
+              <Icon className="w-3 h-3 shrink-0" aria-hidden />
+              {t(`category.${c.category}`)}
             </span>
-          )}
+            <span className={`tabular-nums ${c.done ? 'font-bold text-slate-200' : 'text-slate-300'}`}>
+              {c.done ? `✓ ${formatNumber(c.souls)}` : `${formatNumber(c.souls)} / ${formatNumber(KEY_SPIKE)}`}
+            </span>
+          </div>
+          <div className={`h-1.5 rounded-full bg-white/10 overflow-hidden ${isTarget ? 'ring-1 ring-white/30' : ''}`}>
+            <div
+              className={`h-full rounded-full ${SPIKE_BAR[c.category]}`}
+              style={{ width: `${Math.min(100, (c.souls / KEY_SPIKE) * 100)}%` }}
+            />
+          </div>
         </div>
-        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-          <div
-            className={`h-full rounded-full ${behind ? 'bg-amber-400' : 'bg-teal-400'}`}
-            style={{ width: `${fill}%` }}
-          />
+      );
+    };
+    if (compact) {
+      return (
+        <div className="space-y-1" title={t('invest.title')}>
+          {segment(target, categories.indexOf(target))}
+          <p className="text-small">{pace}</p>
         </div>
+      );
+    }
+    return (
+      <div className="space-y-1.5" title={t('invest.title')}>
+        <div className="flex items-baseline justify-between gap-2 flex-wrap text-small">
+          <span className="font-bold text-slate-200">{t('invest.label', formatNumber(KEY_SPIKE))}</span>
+          {pace}
+        </div>
+        <div className="flex gap-3">{categories.map(segment)}</div>
       </div>
     );
   };

@@ -1,28 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { HeroBuildArchetype, ITEMS_DB } from '../data/deadlockData';
-import {
-  investedSouls,
-  investmentProgress,
-  mainCategory,
-  nudgeTowardKeySpike,
-  reachesKeySpike,
-} from './investments';
+import { ITEMS_DB } from '../data/deadlockData';
+import { investedSouls, investmentProgress, keySpikeReached, nudgeTowardKeySpike, spikeOrder } from './investments';
 import { QueueEntry } from './recommendations';
-
-const build = (phases: Partial<HeroBuildArchetype['phases']>): HeroBuildArchetype => ({
-  id: 'test',
-  name: 'test',
-  subtitle: '',
-  playstyle: '',
-  recommendedForLanes: ['solo', 'duo'],
-  abilitiesOrder: ['1', '2', '3', '4'],
-  abilitiesDetails: [],
-  phases: { early: [], mid: [], late: [], situational: [], ...phases },
-  laneTips: { solo: '', duo: '', yellow_purple: '', orange_blue: '' },
-});
 
 const entry = (id: string): QueueEntry => ({ item: ITEMS_DB[id], reason: '' });
 const ids = (queue: QueueEntry[]) => queue.map((e) => e.item.id);
+
+// Weapon to 4,800 first (Healbane on the way), then spirit, then vitality
+const BUILD = [
+  'extended_magazine',
+  'tesla_bullets',
+  'healbane',
+  'long_range',
+  'extra_spirit',
+  'slowing_hex',
+  'mystic_vulnerability',
+  'mystic_slow',
+  'metal_skin',
+];
 
 describe('investedSouls', () => {
   it('sums the owned items per category', () => {
@@ -34,45 +29,72 @@ describe('investedSouls', () => {
   });
 });
 
-describe('mainCategory and investmentProgress', () => {
-  const weaponBuild = build({ early: ['extended_magazine', 'high_velocity_mag'], mid: ['tesla_bullets'] });
-
-  it('takes the category with the most souls among the early and mid items', () => {
-    expect(mainCategory(weaponBuild)).toBe('weapon');
+describe('spikeOrder', () => {
+  it('follows the order the build takes each category to 4,800', () => {
+    expect(spikeOrder(BUILD)).toEqual(['weapon', 'spirit', 'vitality']);
   });
 
-  it('gives the next high-rank milestone above the invested souls', () => {
-    const progress = investmentProgress(weaponBuild, ['tesla_bullets']);
-    expect(progress).toEqual({ category: 'weapon', souls: 3200, next: { souls: 4800, minute: 12.3 } });
-  });
-
-  it('has no next milestone past the last one', () => {
-    const owned = ['silencer', 'capacitor', 'hollow_point'];
-    expect(investmentProgress(weaponBuild, owned).next).toBeNull();
+  it('puts the categories the build never takes to 4,800 last, most souls first', () => {
+    expect(spikeOrder(['mystic_slow', 'healbane', 'extra_regen', 'extended_magazine'])).toEqual([
+      'vitality',
+      'spirit',
+      'weapon',
+    ]);
   });
 });
 
-describe('reachesKeySpike', () => {
-  it('is true for the item that takes the category to 4,800', () => {
-    expect(reachesKeySpike('long_range', ['tesla_bullets'], 'weapon')).toBe(true);
-    expect(reachesKeySpike('extended_magazine', ['tesla_bullets'], 'weapon')).toBe(false);
+describe('investmentProgress', () => {
+  const order = spikeOrder(BUILD);
+
+  it('targets the first category of the order that is not at 4,800 yet', () => {
+    const progress = investmentProgress(order, ['tesla_bullets']);
+    expect(progress.target).toEqual({ category: 'weapon', souls: 3200, done: false });
+    expect(progress.spikeNumber).toBe(1);
+    expect(progress.minute).toBe(10.2);
+  });
+
+  it('moves on to the next category once one is at 4,800', () => {
+    const progress = investmentProgress(order, ['tesla_bullets', 'long_range', 'slowing_hex']);
+    expect(progress.categories.map((c) => c.done)).toEqual([true, false, false]);
+    expect(progress.target?.category).toBe('spirit');
+    expect(progress.spikeNumber).toBe(2);
+    expect(progress.minute).toBe(15.3);
+  });
+
+  it('counts a spike reached out of order', () => {
+    const progress = investmentProgress(order, ['metal_skin', 'healbane']);
+    expect(progress.target?.category).toBe('weapon');
+    expect(progress.spikeNumber).toBe(2);
+  });
+
+  it('has no target once all three are at 4,800', () => {
+    const progress = investmentProgress(order, BUILD);
+    expect(progress.target).toBeNull();
+    expect(progress.minute).toBeNull();
+  });
+});
+
+describe('keySpikeReached', () => {
+  it('gives the category the item takes to 4,800', () => {
+    expect(keySpikeReached('long_range', ['tesla_bullets'])).toBe('weapon');
+    expect(keySpikeReached('extended_magazine', ['tesla_bullets'])).toBeNull();
   });
 
   it('counts an upgrade minus the component it consumes', () => {
-    expect(reachesKeySpike('capacitor', ['tesla_bullets'], 'weapon')).toBe(true);
+    expect(keySpikeReached('capacitor', ['tesla_bullets'])).toBe('weapon');
   });
 
-  it('is false once the category is already past 4,800', () => {
-    expect(reachesKeySpike('long_range', ['silencer'], 'weapon')).toBe(false);
+  it('is null once the category is already past 4,800', () => {
+    expect(keySpikeReached('long_range', ['silencer'])).toBeNull();
   });
 });
 
 describe('nudgeTowardKeySpike', () => {
   const owned = ['tesla_bullets'];
   const queue = [entry('extended_magazine'), entry('close_quarters'), entry('long_range'), entry('heroic_aura')];
+  const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
 
-  it('moves a spike item from #2 or #3 to #1 when it is usually bought about as early', () => {
-    const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
+  it('moves an item taking the target to 4,800 from #2 or #3 to #1 when it is usually bought about as early', () => {
     expect(ids(nudgeTowardKeySpike(queue, owned, 'weapon', (id) => times[id]))).toEqual([
       'long_range',
       'extended_magazine',
@@ -81,9 +103,12 @@ describe('nudgeTowardKeySpike', () => {
     ]);
   });
 
+  it('only nudges toward the target category', () => {
+    expect(nudgeTowardKeySpike(queue, owned, 'spirit', (id) => times[id])).toBe(queue);
+  });
+
   it('keeps the order when the spike item is usually bought much later', () => {
-    const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 900 };
-    expect(nudgeTowardKeySpike(queue, owned, 'weapon', (id) => times[id])).toBe(queue);
+    expect(nudgeTowardKeySpike(queue, owned, 'weapon', (id) => ({ ...times, long_range: 900 })[id])).toBe(queue);
   });
 
   it('never reaches past #3', () => {

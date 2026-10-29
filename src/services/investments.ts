@@ -1,43 +1,36 @@
 /**
- * Item investment: the souls of the owned items in one shop category give a growing bonus at fixed thresholds
- * (the biggest jump at 4,800). Pure functions of the build and the owned items (tested in investments.test.ts).
+ * Item investment: the souls of the owned items in one shop category give a growing bonus at fixed thresholds,
+ * the biggest jump at 4,800. Builds and high-rank players take one category to 4,800, then the next, then the
+ * last. Pure functions of the build order and the owned items (tested in investments.test.ts).
  */
-import { HeroBuildArchetype, ITEMS_DB, ItemCategory } from '../data/deadlockData';
+import { ITEMS_DB, ItemCategory } from '../data/deadlockData';
 import { getComponentIds, QueueEntry } from './recommendations';
 
 /** The key spike: the largest bonus jump of every category. */
 export const KEY_SPIKE = 4800;
 
 /**
- * Main-category thresholds and the median minute high-rank players (rank 81+, normal games) reach them.
+ * Median minute high-rank players (rank 81+, normal games) have one, two and three categories at 4,800.
  * Measured on 40,000 players over 1.5 days of deadlock-api.com data (docs/INVESTMENTS.md).
  */
-export const HIGH_RANK_MILESTONES: { souls: number; minute: number }[] = [
-  { souls: 1600, minute: 5.6 },
-  { souls: 3200, minute: 10.3 },
-  { souls: 4800, minute: 12.3 },
-  { souls: 6400, minute: 17.8 },
-  { souls: 8000, minute: 19.9 },
-  { souls: 11200, minute: 23.1 },
-];
+export const HIGH_RANK_SPIKE_MINUTES = [10.2, 15.3, 19.9];
 
 /** A spike item may move to #1 only when players usually buy it this close to the current #1 (seconds). */
 const NUDGE_WINDOW_S = 120;
 
-export interface InvestmentProgress {
+const CATEGORIES: ItemCategory[] = ['weapon', 'spirit', 'vitality'];
+
+export interface CategoryInvestment {
   category: ItemCategory;
   souls: number;
-  next: { souls: number; minute: number } | null; // null once past the last milestone
+  done: boolean; // at 4,800 or more
 }
 
-/** The build's main category: the most souls among its early and mid items. */
-export function mainCategory(build: HeroBuildArchetype): ItemCategory {
-  const souls: Record<ItemCategory, number> = { weapon: 0, vitality: 0, spirit: 0 };
-  for (const id of [...build.phases.early, ...build.phases.mid]) {
-    const item = ITEMS_DB[id];
-    if (item) souls[item.category] += item.cost;
-  }
-  return (Object.keys(souls) as ItemCategory[]).reduce((a, b) => (souls[b] > souls[a] ? b : a));
+export interface InvestmentProgress {
+  categories: CategoryInvestment[]; // in the build's spike order
+  target: CategoryInvestment | null; // the next category to take to 4,800, null once all three are there
+  spikeNumber: number; // 1-3: which spike the target is (categories already at 4,800 + 1)
+  minute: number | null; // when high-rank players have that many spikes
 }
 
 /** Souls invested per category. An upgrade counts its full cost, the components it consumed do not count again. */
@@ -51,38 +44,61 @@ export function investedSouls(ownedItems: string[]): Record<ItemCategory, number
   return souls;
 }
 
-export function investmentProgress(build: HeroBuildArchetype, ownedItems: string[]): InvestmentProgress {
-  const category = mainCategory(build);
-  const souls = investedSouls(ownedItems)[category];
-  return { category, souls, next: HIGH_RANK_MILESTONES.find((m) => m.souls > souls) ?? null };
+/**
+ * The order the build takes the categories to 4,800, buying its items in order. Categories it never takes
+ * there follow, most souls first.
+ */
+export function spikeOrder(buildItemIds: string[]): ItemCategory[] {
+  const order: ItemCategory[] = [];
+  const bought: string[] = [];
+  for (const id of buildItemIds) {
+    bought.push(id);
+    const souls = investedSouls(bought);
+    for (const category of CATEGORIES) if (souls[category] >= KEY_SPIKE && !order.includes(category)) order.push(category);
+  }
+  const souls = investedSouls(buildItemIds);
+  const rest = CATEGORIES.filter((c) => !order.includes(c)).sort((a, b) => souls[b] - souls[a]);
+  return [...order, ...rest];
 }
 
-/** Whether buying this item takes the category from below the key spike to at least it. */
-export function reachesKeySpike(itemId: string, ownedItems: string[], category: ItemCategory): boolean {
-  if (ITEMS_DB[itemId]?.category !== category) return false;
-  return investedSouls(ownedItems)[category] < KEY_SPIKE && investedSouls([...ownedItems, itemId])[category] >= KEY_SPIKE;
+export function investmentProgress(order: ItemCategory[], ownedItems: string[]): InvestmentProgress {
+  const souls = investedSouls(ownedItems);
+  const categories = order.map((category) => ({ category, souls: souls[category], done: souls[category] >= KEY_SPIKE }));
+  const doneCount = categories.filter((c) => c.done).length;
+  const target = categories.find((c) => !c.done) ?? null;
+  return {
+    categories,
+    target,
+    spikeNumber: doneCount + 1,
+    minute: target ? HIGH_RANK_SPIKE_MINUTES[doneCount] : null,
+  };
+}
+
+/** The category this item takes from below 4,800 to at least 4,800, if any. */
+export function keySpikeReached(itemId: string, ownedItems: string[]): ItemCategory | null {
+  const category = ITEMS_DB[itemId]?.category;
+  if (!category) return null;
+  const before = investedSouls(ownedItems)[category];
+  return before < KEY_SPIKE && investedSouls([...ownedItems, itemId])[category] >= KEY_SPIKE ? category : null;
 }
 
 /**
- * Gentle nudge: when the #1 does not reach the key spike but #2 or #3 does and players usually buy it at
- * about the same time, that item becomes #1. The rest of the queue keeps its order.
+ * Gentle nudge: when the #1 does not take the target category to 4,800 but #2 or #3 does and players usually
+ * buy it at about the same time, that item becomes #1. The rest of the queue keeps its order.
  */
 export function nudgeTowardKeySpike(
   queue: QueueEntry[],
   ownedItems: string[],
-  category: ItemCategory,
+  target: ItemCategory | null,
   buyTimeS: (itemId: string) => number | undefined
 ): QueueEntry[] {
-  if (queue.length < 2 || reachesKeySpike(queue[0].item.id, ownedItems, category)) return queue;
+  const reachesTarget = (id: string) => target !== null && keySpikeReached(id, ownedItems) === target;
+  if (queue.length < 2 || reachesTarget(queue[0].item.id)) return queue;
   const firstTime = buyTimeS(queue[0].item.id);
   if (firstTime === undefined) return queue;
   const idx = queue.slice(1, 3).findIndex((entry) => {
     const time = buyTimeS(entry.item.id);
-    return (
-      time !== undefined &&
-      time - firstTime <= NUDGE_WINDOW_S &&
-      reachesKeySpike(entry.item.id, ownedItems, category)
-    );
+    return time !== undefined && time - firstTime <= NUDGE_WINDOW_S && reachesTarget(entry.item.id);
   });
   if (idx < 0) return queue;
   const spike = queue[idx + 1];

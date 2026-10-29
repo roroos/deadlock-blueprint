@@ -1,37 +1,41 @@
 # Item investment (normal mode)
 
 Owned items in one shop category (weapon, vitality, spirit) give a bonus at fixed soul thresholds: 800, 1,600,
-2,400, 3,200, 4,800, 6,400 and up. The jump at **4,800** is the largest one in every category, so the buy tab
-tracks it.
+2,400, 3,200, 4,800, 6,400 and up. The jump at **4,800** is the largest one in every category. Good builds take
+one category to 4,800, then the next, then the last, and the buy tab follows that.
 
 ## What the app shows
 
-- **Investment line** above the buy cards (and in the overlay): souls in the build's main category, the next
-  milestone, and the minute high-rank players usually reach it. It turns amber when the match clock is past
-  that minute.
-- **"Reaches the 4,800 spike"** on any shown item that takes the main category from below 4,800 to 4,800 or more.
-- **Gentle nudge**: when #2 or #3 reaches 4,800, the #1 does not, and players usually buy the two within
-  2 minutes of each other, the spike item becomes #1. Nothing else is reordered, and a locked #1 stays locked.
+- **Spike line** above the buy cards: the three categories in the build's spike order, the souls in each
+  (✓ at 4,800), and when high-rank players have that many spikes. It turns amber once the match clock is past
+  that minute. The overlay shows the next spike only.
+- **"Reaches the 4,800 … spike"** on any shown item that takes a category from below 4,800 to 4,800 or more.
+- **Gentle nudge**: when #2 or #3 takes the *next* spike's category to 4,800, the #1 does not, and players usually
+  buy the two within 2 minutes of each other, that item becomes #1. Nothing else is reordered, and a locked #1
+  stays locked.
 
-The main category is the one with the most souls among the build's early and mid items. An upgrade counts at its
-full price and its consumed component does not count again (`src/services/investments.ts`).
+The spike order comes from the build: buying its early, mid and late items in order, the order the categories
+reach 4,800 (categories it never takes there come last, most souls first). An upgrade counts at its full price
+and its consumed component does not count again (`src/services/investments.ts`).
 
-## Where the timings come from
+## Where the numbers come from
 
-deadlock-api.com `/v1/sql`, table `match_player_latest`, normal games, 40,000 players per group over 1.5 days.
-The table below gives the median minute players reach each main-category threshold, with the share of players
-who reach it.
+**Published builds**: the 15 most-favourited builds of the week per hero, updated in the last 60 days
+(654 builds, deadlock-api.com `/v1/builds`), bought in their order:
 
-| Main category | Rank 81+ | Rank 1-40 |
+- the first category reaches 4,800 at a median 7,200 souls spent, with 70% of them in it;
+- the second at 12,800, with only 1,600 in the third category by then;
+- 67% take all three to 4,800. No fixed order: spirit first in 53%, weapon 33%, vitality 14%.
+
+**Players**: deadlock-api.com `/v1/sql`, table `match_player_latest`, normal games, 40,000 players per group over
+1.5 days. Median minute players have one, two and three categories at 4,800:
+
+| Categories at 4,800 | Rank 81+ | Rank 1-40 |
 |---|---|---|
-| 1,600 | 5.6 min (99%) | 6.1 min (97%) |
-| 3,200 | 10.3 min (98%) | 11.2 min (95%) |
-| 4,800 | 12.3 min (96%) | 14.1 min (93%) |
-| 6,400 | 17.8 min (86%) | 18.6 min (87%) |
-| 8,000 | 19.9 min (79%) | 21.1 min (81%) |
-| 11,200 | 23.1 min (66%) | 24.4 min (70%) |
+| 1 | 10.2 min (75% of the souls in it) | 11.6 min (70%) |
+| 2 | 15.3 min (third category: 800) | 17.4 min (third category: 1,600) |
+| 3 | 19.9 min (55% get there) | 23.2 min (49%) |
 
-High-rank players also put more of their early souls in the main category (50% at 8 minutes against 40%).
-At the same total spend and time, being at 4,800 in the main category goes with about +0.5 to +0.8 points of win
-rate. That gain is small next to the noise (about ±0.6), which is why the app nudges rather than reorders the
-build.
+At the same total spend and time, the first 4,800 goes with about +2.7 points of win rate at high rank, the
+third with +0.7 to +3. The second is neutral at high rank and +1.5 to +2 at low rank. These are correlations, not
+proof, which is why the app nudges rather than reorders the build.

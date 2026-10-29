@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Settings,
   ShoppingCart,
+  Shuffle,
   Swords,
   Terminal,
   Unlock,
@@ -58,8 +59,11 @@ import {
   withLockedFirst,
 } from './services/recommendations';
 import {
+  CHEAP_TOP_UP,
   CORE_SPIKES,
   KEY_SPIKE,
+  inBuyOrder,
+  investmentItems,
   investmentProgress,
   isSpikeWorthIt,
   nudgeTowardKeySpike,
@@ -95,8 +99,11 @@ import { ReportContent, ReportDialog } from './components/ReportDialog';
 import { DiagnosticsTab } from './components/DiagnosticsTab';
 import { I18nContext, makeI18n } from './i18n';
 import { Lang, detectLang, readStoredLang, storeLang } from './i18n/lang';
+// Street Brawl mode: everything lives in src/streetBrawl, the app only shows its tab
+import { StreetBrawlPanel } from './streetBrawl/StreetBrawlPanel';
+import { streetBrawlText } from './streetBrawl/i18n';
 
-type MainTab = 'essential' | 'builds' | 'powers' | 'matchups' | 'logs';
+type MainTab = 'essential' | 'builds' | 'powers' | 'matchups' | 'logs' | 'streetBrawl';
 
 interface LockedNextPurchase {
   key: string; // `${heroId}|${buildId}` — the lock is dropped when the hero or the build changes
@@ -589,26 +596,40 @@ export function App() {
     [inventoryStatus, activeBuild, tacticalPlan.priorityItems]
   );
 
-  // The build takes one category to 4,800 souls, then the next, then the last (services/investments.ts).
+  // The build takes one category to 4,800 souls, then the next, then the last, in the order players buy its items
+  // (services/investments.ts); a category the player committed to replaces the build's next one.
   // A custom build's order is its author's groups, situational ones left out.
   const buildSpikeOrder = useMemo(
     () =>
       spikeOrder(
         customBuild
           ? customBuild.groups.filter((g) => !g.isSituational).flatMap((g) => g.itemIds)
-          : [...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late]
+          : inBuyOrder(
+              [...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late],
+              (itemId) => getHeroItemStat(myHeroId, itemId)?.buyTimeS || undefined
+            )
       ),
-    [customBuild, activeBuild]
+    [customBuild, activeBuild, myHeroId]
   );
-  const investment = useMemo(() => investmentProgress(buildSpikeOrder, ownedItems), [buildSpikeOrder, ownedItems]);
+  // Hand-marked items ("Skip") count only once the scanner sees them (services/investments.ts)
+  const investedItems = useMemo(
+    () => investmentItems(ownedItems, readManualOwned(), inventoryStatus?.itemIds ?? null),
+    [ownedItems, inventoryStatus]
+  );
+  const investment = useMemo(() => investmentProgress(buildSpikeOrder, investedItems), [buildSpikeOrder, investedItems]);
 
   const rawNextToBuyQueue = useMemo(() => {
     // A custom build keeps its author's order: no buy-time sort, no spike nudge
     if (customBuild) return getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates);
     const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
     const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
-    return nudgeTowardKeySpike(queue, ownedItems, investment, (itemId) => buyTimeS(itemId) || undefined);
-  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investment, customBuild]);
+    // The item each card will say to sell (inventory full) leaves before the spike is counted
+    const soldItem = (q: QueueEntry[], itemId: string) => {
+      const plan = getSlotPlans(q.slice(0, 6), ownedItems, inventoryStatus, sellCandidates).get(itemId);
+      return plan?.kind === 'sell' ? plan.itemId : undefined;
+    };
+    return nudgeTowardKeySpike(queue, investedItems, investment, (itemId) => buyTimeS(itemId) || undefined, soldItem);
+  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investedItems, investment, customBuild]);
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.
@@ -948,12 +969,13 @@ export function App() {
   }, [isDedicatedOverlayWindow]);
 
   useEffect(() => {
-    if (!autoScanEnabled || isDedicatedOverlayWindow) return;
+    // The Street Brawl tab runs its own reader: the normal-mode rules would misread its 4v4 HUD
+    if (!autoScanEnabled || isDedicatedOverlayWindow || activeTab === 'streetBrawl') return;
     const timer = setInterval(() => {
       performScreenScan();
     }, 350);
     return () => clearInterval(timer);
-  }, [autoScanEnabled, isDedicatedOverlayWindow, performScreenScan]);
+  }, [autoScanEnabled, isDedicatedOverlayWindow, performScreenScan, activeTab]);
 
   useEffect(() => {
     if (!window.electronAPI) return;
@@ -1234,30 +1256,36 @@ export function App() {
     );
   };
 
-  /** "Reaches the 4,800 Spirit spike" under an item that finishes the next spike worth it (isSpikeWorthIt). */
+  /**
+   * "Reaches the 4,800 Spirit spike" under an item that finishes the next spike worth it (isSpikeWorthIt), after
+   * selling what its card says to sell. Neutral chip with the tab colour on the icon: amber is kept for "late".
+   */
   const renderSpikeHint = (itemId: string, compact = false) => {
     const category = investment.target?.category;
-    if (!category || !isSpikeWorthIt(itemId, ownedItems, investment)) return null;
+    const plan = slotPlans.get(itemId);
+    const soldId = plan?.kind === 'sell' ? plan.itemId : undefined;
+    if (!category || !isSpikeWorthIt(itemId, investedItems, investment, soldId)) return null;
     return (
       <div
-        className={`flex items-center gap-1.5 rounded-lg border font-bold bg-amber-500/15 border-amber-400/40 text-amber-200 ${
+        className={`flex items-center gap-1.5 rounded-lg border font-bold bg-white/5 border-white/20 text-slate-100 ${
           compact ? 'px-1.5 py-0.5' : 'px-2 py-1'
         } text-small`}
         title={t('invest.spikeTitle')}
       >
-        <TrendingUp className="w-3 h-3 shrink-0" />
+        <TrendingUp className={`w-3 h-3 shrink-0 ${SHOP_TABS[category].className}`} aria-hidden />
         <span>{t('invest.spike', t(`category.${category}`), formatNumber(KEY_SPIKE))}</span>
       </div>
     );
   };
 
   /**
-   * The three 4,800 spikes in the build's order: souls in each category, the one to finish next and when
-   * high-rank players have that many. Compact (overlay): the next one only.
+   * The three 4,800 spikes in the build's order: souls in each category, the one to finish next and when players
+   * usually have that many (rank 81+ to rank 1-40). Amber only once the clock is past the slower median.
+   * Compact (overlay): the next one only, with a short pace line.
    */
   const renderInvestment = (compact = false) => {
-    const { categories, target, spikeNumber, minute } = investment;
-    if (!target || minute === null) {
+    const { categories, target, spikeNumber, pace } = investment;
+    if (!target || !pace) {
       return (
         <p className="text-small text-slate-400" title={t('invest.title')}>
           {t('invest.allDone', formatNumber(KEY_SPIKE))}
@@ -1266,13 +1294,20 @@ export function App() {
     }
     // Past the first two spikes, the third is only worth a cheap top-up: no pace to keep
     const coreDone = spikeNumber > CORE_SPIKES;
-    const behind = !coreDone && clockS !== undefined && clockS > minute * 60;
-    const pace = coreDone ? (
-      <span className="text-slate-400">{t('invest.coreDone')}</span>
+    const range = `${Math.round(pace.highRank)}–${Math.round(pace.lowRank)}`;
+    const late = String(Math.round(pace.lowRank));
+    const behind = !coreDone && clockS !== undefined && clockS > pace.lowRank * 60;
+    const paceLine = coreDone ? (
+      <span className="text-slate-400">
+        {compact ? t('invest.coreDoneShort', formatNumber(CHEAP_TOP_UP)) : t('invest.coreDone', formatNumber(CHEAP_TOP_UP))}
+      </span>
+    ) : behind ? (
+      <span className="font-bold text-amber-300">
+        {compact ? t('invest.behindShort', spikeNumber, late) : t('invest.behind', spikeNumber, late)}
+      </span>
     ) : (
-      <span className={behind ? 'font-bold text-amber-300' : 'text-slate-400'}>
-        {t('invest.pace', spikeNumber, String(Math.round(minute)))}
-        {behind && ` · ${t('invest.behind')}`}
+      <span className="text-slate-400">
+        {compact ? t('invest.paceShort', spikeNumber, range) : t('invest.pace', spikeNumber, range)}
       </span>
     );
     const segment = (c: (typeof categories)[number], index: number) => {
@@ -1303,7 +1338,7 @@ export function App() {
       return (
         <div className="space-y-1" title={t('invest.title')}>
           {segment(target, categories.indexOf(target))}
-          <p className="text-small">{pace}</p>
+          <p className="text-small truncate">{paceLine}</p>
         </div>
       );
     }
@@ -1311,7 +1346,7 @@ export function App() {
       <div className="space-y-1.5" title={t('invest.title')}>
         <div className="flex items-baseline justify-between gap-2 flex-wrap text-small">
           <span className="font-bold text-slate-200">{t('invest.label', formatNumber(KEY_SPIKE))}</span>
-          {pace}
+          {paceLine}
         </div>
         <div className="flex gap-3">{categories.map(segment)}</div>
       </div>
@@ -1783,6 +1818,14 @@ export function App() {
 
   const showUpdateBanner =
     !updateDismissed && (updateStatus.state === 'available' || updateStatus.state === 'ready');
+  // The normal scan is paused on the Street Brawl tab and never reads its 4v4 HUD: its warning does not apply there
+  const showHudMissing = hudMissing && activeTab !== 'streetBrawl';
+  /** The hero the Street Brawl tab read from its ability icons: selected like a hand pick, without locking it. */
+  const selectHeroFromStreetBrawl = (heroId: string) => {
+    setMyHeroId(heroId);
+    snapshotRef.current = { ...snapshotRef.current, myHeroId: heroId };
+    trackerRef.current.resetHero();
+  };
 
   return (
     <I18nContext.Provider value={i18n}>
@@ -2147,6 +2190,7 @@ export function App() {
                 { id: 'builds', label: t('tabs.builds'), icon: Package },
                 { id: 'matchups', label: t('tabs.matchups', totalSelectedEnemies), icon: Swords },
                 { id: 'logs', label: t('tabs.logs'), icon: Terminal },
+                { id: 'streetBrawl', label: streetBrawlText(lang).tab, icon: Shuffle },
               ] as const
             ).map((tab) => {
               const TabIcon = tab.icon;
@@ -2188,7 +2232,7 @@ export function App() {
         </div>
 
         {/* Notices: update available, unsupported screen format, HUD never found */}
-        {(showUpdateBanner || formatIssue || hudMissing) && (
+        {(showUpdateBanner || formatIssue || showHudMissing) && (
           <div className="px-3 pt-2 space-y-2 shrink-0">
             {showUpdateBanner && (
               <div className="max-w-5xl mx-auto px-3 py-2 rounded-xl bg-emerald-950/60 border border-emerald-500/50 flex items-center justify-between gap-2 flex-wrap text-body">
@@ -2240,7 +2284,7 @@ export function App() {
                 </button>
               </div>
             )}
-            {!formatIssue && hudMissing && (
+            {!formatIssue && showHudMissing && (
               <div className="max-w-5xl mx-auto px-3 py-2 rounded-xl bg-amber-950/50 border border-amber-500/40 flex items-start gap-2 text-small text-amber-100">
                 <Info className="w-4 h-4 text-amber-300 shrink-0" />
                 <span>
@@ -2722,6 +2766,17 @@ export function App() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {/* ================= STREET BRAWL (src/streetBrawl) ================= */}
+            {activeTab === 'streetBrawl' && (
+              <StreetBrawlPanel
+                heroId={myHeroId}
+                heroName={myHero.name}
+                lang={lang}
+                sourceId={selectedSourceId}
+                onHeroDetected={selectHeroFromStreetBrawl}
+              />
             )}
 
             {/* ================= TAB 5: DIAGNOSTICS ================= */}

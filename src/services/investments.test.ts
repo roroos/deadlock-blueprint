@@ -6,11 +6,10 @@ import {
   investedSouls,
   investmentItems,
   investmentProgress,
-  isSpikeWorthIt,
   keySpikeReached,
   nudgeTowardKeySpike,
   spikeOrder,
-  spikeTopUp,
+  spikeBadge,
 } from './investments';
 import { QueueEntry } from './recommendations';
 
@@ -162,9 +161,9 @@ describe('keySpikeReached', () => {
   });
 });
 
-describe('isSpikeWorthIt', () => {
+describe('spikeBadge', () => {
   const order = spikeOrder(BUILD);
-  const worthIt = (itemId: string, owned: string[]) => isSpikeWorthIt(itemId, owned, investmentProgress(order, owned));
+  const worthIt = (itemId: string, owned: string[]) => spikeBadge(itemId, owned, investmentProgress(order, owned)) !== null;
 
   it('points out an item finishing the first or second spike', () => {
     expect(worthIt('long_range', ['tesla_bullets'])).toBe(true);
@@ -293,18 +292,18 @@ describe('spike windows', () => {
 
   it('points out no item once the spike is past its window', () => {
     const early = investmentProgress(order, ['tesla_bullets'], min(10));
-    expect(isSpikeWorthIt('long_range', ['tesla_bullets'], early)).toBe(true);
+    expect(spikeBadge('long_range', ['tesla_bullets'], early) !== null).toBe(true);
     const late = investmentProgress(order, ['tesla_bullets'], min(15));
-    expect(isSpikeWorthIt('long_range', ['tesla_bullets'], late)).toBe(false);
+    expect(spikeBadge('long_range', ['tesla_bullets'], late) !== null).toBe(false);
   });
 
   it('points out any item for the third spike before 22 min, a top-up only after', () => {
     const owned = [...twoSpikes, 'healbane'];
-    expect(isSpikeWorthIt('metal_skin', owned, investmentProgress(order, owned, min(21)))).toBe(true);
-    expect(isSpikeWorthIt('metal_skin', owned, investmentProgress(order, owned, min(23)))).toBe(false);
+    expect(spikeBadge('metal_skin', owned, investmentProgress(order, owned, min(21))) !== null).toBe(true);
+    expect(spikeBadge('metal_skin', owned, investmentProgress(order, owned, min(23))) !== null).toBe(false);
     const cheap = [...twoSpikes, 'metal_skin', 'extra_regen'];
-    expect(isSpikeWorthIt('extra_health', cheap, investmentProgress(order, cheap, min(23)))).toBe(true);
-    expect(isSpikeWorthIt('extra_health', cheap, investmentProgress(order, cheap, min(25)))).toBe(false);
+    expect(spikeBadge('extra_health', cheap, investmentProgress(order, cheap, min(23))) !== null).toBe(true);
+    expect(spikeBadge('extra_health', cheap, investmentProgress(order, cheap, min(25))) !== null).toBe(false);
   });
 
   it('does not nudge toward a spike past its window', () => {
@@ -318,23 +317,23 @@ describe('spike windows', () => {
   });
 });
 
-describe('spikeTopUp', () => {
+describe('spikeBadge top-up', () => {
   const order = spikeOrder(BUILD);
   const owned = ['tesla_bullets', 'extended_magazine']; // weapon at 4,000
   const progress = investmentProgress(order, owned, 12 * 60);
 
   it('gives the last souls when an item crosses 4,800 from 4,000 or more', () => {
-    expect(spikeTopUp('monster_rounds', owned, progress)).toBe(800);
-    expect(spikeTopUp('titanic_magazine', owned, progress)).toBe(800); // 800 to 1,600 upgrade
+    expect(spikeBadge('monster_rounds', owned, progress)?.topUp).toBe(800);
+    expect(spikeBadge('titanic_magazine', owned, progress)?.topUp).toBe(800); // 800 to 1,600 upgrade
   });
 
   it('is null for an item adding more than 800, or from below 4,000', () => {
-    expect(spikeTopUp('long_range', owned, progress)).toBeNull();
+    expect(spikeBadge('long_range', owned, progress)?.topUp ?? null).toBeNull();
     const far = ['tesla_bullets'];
-    expect(spikeTopUp('long_range', far, investmentProgress(order, far, 12 * 60))).toBeNull();
+    expect(spikeBadge('long_range', far, investmentProgress(order, far, 12 * 60))?.topUp ?? null).toBeNull();
   });
 
   it('is null once the spike is past its window', () => {
-    expect(spikeTopUp('monster_rounds', owned, investmentProgress(order, owned, 15 * 60))).toBeNull();
+    expect(spikeBadge('monster_rounds', owned, investmentProgress(order, owned, 15 * 60))?.topUp ?? null).toBeNull();
   });
 });

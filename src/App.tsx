@@ -63,10 +63,9 @@ import {
   investmentItems,
   investedSouls,
   investmentProgress,
-  isSpikeWorthIt,
   sellKeepsSpikes,
   spikeOrder,
-  spikeTopUp,
+  spikeBadge,
 } from './services/investments';
 import {
   isMatchLogEnabled,
@@ -1118,16 +1117,15 @@ export function App() {
   };
 
   /**
-   * "Reaches the 4,800 Spirit spike" under an item that finishes the next spike worth it (isSpikeWorthIt), after
-   * selling what its card says to sell. Neutral chip with the tab colour on the icon: amber is kept for "late".
+   * The spike badge under an item (spikeBadge), after selling what its card says to sell: "Reaches the 4,800 Spirit
+   * spike", or "Last 800 souls to ..." when the category is already close. Neutral chip with the tab colour on the
+   * icon: amber is kept for "late".
    */
   const renderSpikeHint = (itemId: string, compact = false) => {
-    const category = investment.target?.category;
     const plan = slotPlans.get(itemId);
-    const soldId = plan?.kind === 'sell' ? plan.itemId : undefined;
-    if (!category || !isSpikeWorthIt(itemId, investedItems, investment, soldId)) return null;
-    // The last 800 souls of a category sitting at 4,000+: the same chip, said as a top-up (never a reorder)
-    const topUp = spikeTopUp(itemId, investedItems, investment, soldId);
+    const badge = spikeBadge(itemId, investedItems, investment, plan?.kind === 'sell' ? plan.itemId : undefined);
+    if (!badge) return null;
+    const category = t(`category.${badge.category}`);
     return (
       <div
         className={`flex items-center gap-1.5 rounded-lg border font-bold bg-white/5 border-white/20 text-slate-100 ${
@@ -1135,11 +1133,11 @@ export function App() {
         } text-small`}
         title={t('invest.spikeTitle')}
       >
-        <TrendingUp className={`w-3 h-3 shrink-0 ${SHOP_TABS[category].className}`} aria-hidden />
+        <TrendingUp className={`w-3 h-3 shrink-0 ${SHOP_TABS[badge.category].className}`} aria-hidden />
         <span>
-          {topUp === null
-            ? t('invest.spike', t(`category.${category}`), formatNumber(KEY_SPIKE))
-            : t('invest.topUp', t(`category.${category}`), formatNumber(KEY_SPIKE), formatNumber(topUp))}
+          {badge.topUp === null
+            ? t('invest.spike', category, formatNumber(KEY_SPIKE))
+            : t('invest.topUp', category, formatNumber(KEY_SPIKE), formatNumber(badge.topUp))}
         </span>
       </div>
     );

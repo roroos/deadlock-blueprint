@@ -171,6 +171,15 @@ function afterPurchase(itemId: string, ownedItems: string[], soldId?: string): s
   return [...ownedItems.filter((id) => id !== soldId), itemId];
 }
 
+/** What buying an item does to its own category: the souls before and after, `soldId` sold first (inventory full). */
+function categoryGain(itemId: string, ownedItems: string[], soldId?: string) {
+  const category = ITEMS_DB[itemId]?.category;
+  if (!category) return null;
+  const before = investedSouls(ownedItems)[category];
+  const after = investedSouls(afterPurchase(itemId, ownedItems, soldId))[category];
+  return { category, before, after, added: after - before };
+}
+
 /**
  * Whether selling `soldId` to make room for `itemId` keeps every category that is at 4,800: a sale that drops a
  * finished spike below it (and the new item does not bring it back) throws away the biggest bonus jump. Measured
@@ -182,59 +191,42 @@ export function sellKeepsSpikes(ownedItems: string[], soldId: string, itemId: st
   return CATEGORIES.every((category) => before[category] < KEY_SPIKE || after[category] >= KEY_SPIKE);
 }
 
-/**
- * The category this item takes from below 4,800 to at least 4,800, if any. With a full inventory, the item sold
- * to make room (`soldId`) leaves first: selling a weapon item to buy one could otherwise "reach" a weapon spike.
- */
+/** The category this item takes from below 4,800 to at least 4,800, if any. */
 export function keySpikeReached(itemId: string, ownedItems: string[], soldId?: string): ItemCategory | null {
-  const category = ITEMS_DB[itemId]?.category;
-  if (!category) return null;
-  const before = investedSouls(ownedItems)[category];
-  return before < KEY_SPIKE && investedSouls(afterPurchase(itemId, ownedItems, soldId))[category] >= KEY_SPIKE
-    ? category
-    : null;
+  const gain = categoryGain(itemId, ownedItems, soldId);
+  return gain && gain.before < KEY_SPIKE && gain.after >= KEY_SPIKE ? gain.category : null;
+}
+
+export interface SpikeBadge {
+  category: ItemCategory;
+  /** The souls added when the category was already at 4,000 or more and the item adds at most a top-up: "last 800" */
+  topUp: number | null;
 }
 
 /**
- * Whether this item is worth pointing out: it takes the target category to 4,800 while that spike is still worth
- * pushing (progress.push): any item for the first two spikes and the third while it is early, a small top-up
- * for the third after that.
+ * The badge an item gets, or null: it takes the target category to 4,800 while that spike is still worth pushing
+ * (progress.push), and for a "top-up" push only when it adds at most CHEAP_TOP_UP souls. With the category already
+ * at 4,000 or more the badge says how few souls are left: 38% of players spend time at 4,000-4,799 before their
+ * first spike (median wait 1.9 min at rank 81+, 2.6 at 1-40; 46% of the crossings add only 800, mostly an 800 to
+ * 1,600 upgrade). `soldId` is the item the card says to sell first (inventory full).
  */
-export function isSpikeWorthIt(
+export function spikeBadge(
   itemId: string,
   ownedItems: string[],
   progress: InvestmentProgress,
   soldId?: string
-): boolean {
-  const target = progress.target?.category;
-  if (!target || progress.push === 'off' || keySpikeReached(itemId, ownedItems, soldId) !== target) return false;
-  if (progress.push === 'full') return true;
-  return (
-    investedSouls(afterPurchase(itemId, ownedItems, soldId))[target] - investedSouls(ownedItems)[target] <= CHEAP_TOP_UP
-  );
+): SpikeBadge | null {
+  if (progress.push === 'off') return null;
+  const gain = categoryGain(itemId, ownedItems, soldId);
+  if (!gain || gain.category !== progress.target?.category) return null;
+  if (gain.before >= KEY_SPIKE || gain.after < KEY_SPIKE) return null;
+  const isTopUp = gain.added <= CHEAP_TOP_UP;
+  if (progress.push === 'top-up' && !isTopUp) return null;
+  return { category: gain.category, topUp: isTopUp && gain.before >= NEAR_MISS_FROM ? gain.added : null };
 }
 
 /**
- * The souls this item adds to the target category when it finishes the 4,800 from at least 4,000 and adds no more
- * than a top-up (800): the "last 800 souls" badge, shown instead of the plain spike badge. 38% of players spend time
- * at 4,000-4,799 before their first spike (median wait 1.9 min at rank 81+, 2.6 at 1-40; 46% of the crossings add
- * only 800, mostly an 800 to 1,600 upgrade). It never reorders anything.
- */
-export function spikeTopUp(
-  itemId: string,
-  ownedItems: string[],
-  progress: InvestmentProgress,
-  soldId?: string
-): number | null {
-  const target = progress.target?.category;
-  if (!target || !isSpikeWorthIt(itemId, ownedItems, progress, soldId)) return null;
-  const before = investedSouls(ownedItems)[target];
-  const added = investedSouls(afterPurchase(itemId, ownedItems, soldId))[target] - before;
-  return before >= NEAR_MISS_FROM && added <= CHEAP_TOP_UP ? added : null;
-}
-
-/**
- * Gentle nudge: when the #1 is not worth a spike but #2 or #3 is (isSpikeWorthIt) and players usually buy it
+ * Gentle nudge: when the #1 has no spike badge but #2 or #3 has (spikeBadge) and players usually buy it
  * at about the same time, that item becomes #1. The rest of the queue keeps its order. Never when the target
  * comes from the inventory: the queue follows the build, and the player who left it does not need it reordered.
  * `soldItem` gives the item sold to make room for an item in a queue (inventory full), as the cards will show
@@ -249,8 +241,8 @@ export function nudgeTowardKeySpike(
   soldItem: (queue: QueueEntry[], itemId: string) => string | undefined = () => undefined,
   isKeyCore: (itemId: string) => boolean = () => false
 ): QueueEntry[] {
-  const reachesTarget = (q: QueueEntry[]) => isSpikeWorthIt(q[0].item.id, ownedItems, progress, soldItem(q, q[0].item.id));
-  if (progress.fromInventory || queue.length < 2 || reachesTarget(queue)) return queue;
+  const hasBadge = (q: QueueEntry[]) => spikeBadge(q[0].item.id, ownedItems, progress, soldItem(q, q[0].item.id)) !== null;
+  if (progress.fromInventory || queue.length < 2 || hasBadge(queue)) return queue;
   const firstTime = buyTimeS(queue[0].item.id);
   if (firstTime === undefined) return queue;
   for (const [index, spike] of queue.slice(1, 3).entries()) {
@@ -259,7 +251,7 @@ export function nudgeTowardKeySpike(
     const time = buyTimeS(spike.item.id);
     if (time === undefined || time - firstTime > NUDGE_WINDOW_S) continue;
     const nudged = [spike, ...queue.filter((entry) => entry !== spike)];
-    if (reachesTarget(nudged)) return nudged;
+    if (hasBadge(nudged)) return nudged;
   }
   return queue;
 }

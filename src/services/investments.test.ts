@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { HEROES_DB, ITEMS_DB, getHeroItemStat } from '../data/deadlockData';
+import { HEROES_DB, getHeroItemStat } from '../data/deadlockData';
 import { readJournal, replayJournal } from '../test/journalReplay';
+import { SPIKE_BUILD } from '../test/queue';
+import { getBuildItemIds } from './recommendations';
 import {
   inBuyOrder,
   investedSouls,
@@ -11,24 +13,6 @@ import {
   spikeOrder,
   spikeBadge,
 } from './investments';
-import { nudgeTowardKeySpike } from './buyQueue';
-import { QueueEntry } from './recommendations';
-
-const entry = (id: string): QueueEntry => ({ item: ITEMS_DB[id], reason: '' });
-const ids = (queue: QueueEntry[]) => queue.map((e) => e.item.id);
-
-// Weapon to 4,800 first (Healbane on the way), then spirit, then vitality
-const BUILD = [
-  'extended_magazine',
-  'tesla_bullets',
-  'healbane',
-  'long_range',
-  'extra_spirit',
-  'slowing_hex',
-  'mystic_vulnerability',
-  'mystic_slow',
-  'metal_skin',
-];
 
 describe('investedSouls', () => {
   it('sums the owned items per category', () => {
@@ -77,7 +61,7 @@ describe('inBuyOrder', () => {
 
 describe('spikeOrder', () => {
   it('follows the order the build takes each category to 4,800', () => {
-    expect(spikeOrder(BUILD)).toEqual(['weapon', 'spirit', 'vitality']);
+    expect(spikeOrder(SPIKE_BUILD)).toEqual(['weapon', 'spirit', 'vitality']);
   });
 
   it('puts the categories the build never takes to 4,800 last, most souls first', () => {
@@ -90,7 +74,7 @@ describe('spikeOrder', () => {
 });
 
 describe('investmentProgress', () => {
-  const order = spikeOrder(BUILD);
+  const order = spikeOrder(SPIKE_BUILD);
 
   it('targets the first category of the order that is not at 4,800 yet', () => {
     const progress = investmentProgress(order, ['tesla_bullets']);
@@ -133,7 +117,7 @@ describe('investmentProgress', () => {
   });
 
   it('has no target once all three are at 4,800', () => {
-    const progress = investmentProgress(order, BUILD);
+    const progress = investmentProgress(order, SPIKE_BUILD);
     expect(progress.target).toBeNull();
     expect(progress.pace).toBeNull();
   });
@@ -163,7 +147,7 @@ describe('keySpikeReached', () => {
 });
 
 describe('spikeBadge', () => {
-  const order = spikeOrder(BUILD);
+  const order = spikeOrder(SPIKE_BUILD);
   const worthIt = (itemId: string, owned: string[]) => spikeBadge(itemId, owned, investmentProgress(order, owned)) !== null;
 
   it('points out an item finishing the first or second spike', () => {
@@ -182,72 +166,11 @@ describe('spikeBadge', () => {
   });
 });
 
-describe('nudgeTowardKeySpike', () => {
-  const owned = ['tesla_bullets'];
-  const progress = investmentProgress(spikeOrder(BUILD), owned);
-  const queue = [entry('extended_magazine'), entry('close_quarters'), entry('long_range'), entry('heroic_aura')];
-  const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
-
-  it('moves an item taking the target to 4,800 from #2 or #3 to #1 when it is usually bought about as early', () => {
-    expect(ids(nudgeTowardKeySpike(queue, owned, progress, { buyTimeS: (id) => times[id] }))).toEqual([
-      'long_range',
-      'extended_magazine',
-      'close_quarters',
-      'heroic_aura',
-    ]);
-  });
-
-  it('only nudges toward the target category', () => {
-    // Spirit 2,400 is close enough to weapon 3,200 for the build's spirit-first order to hold
-    const spiritOwned = [...owned, 'mystic_slow', 'extra_spirit'];
-    const spiritTarget = investmentProgress(['spirit', 'weapon', 'vitality'], spiritOwned);
-    expect(spiritTarget.fromInventory).toBe(false);
-    expect(nudgeTowardKeySpike(queue, spiritOwned, spiritTarget, { buyTimeS: (id) => times[id] })).toBe(queue);
-  });
-
-  it('keeps the order when the spike item is usually bought much later', () => {
-    expect(nudgeTowardKeySpike(queue, owned, progress, { buyTimeS: (id) => ({ ...times, long_range: 900 })[id] })).toBe(queue);
-  });
-
-  it('does not nudge an item whose spike the sale it needs takes back', () => {
-    const full = ['tesla_bullets', 'extended_magazine'];
-    const fullProgress = investmentProgress(spikeOrder(BUILD), full);
-    const q = [entry('extra_spirit'), entry('monster_rounds')];
-    const at = () => 600;
-    expect(ids(nudgeTowardKeySpike(q, full, fullProgress, { buyTimeS: at }))).toEqual(['monster_rounds', 'extra_spirit']);
-    // The #1 sells the weakest item: once moved to #1, the spike item would sell Extended Magazine
-    const sold = (queue: QueueEntry[], id: string) => (queue[0].item.id === id ? 'extended_magazine' : undefined);
-    expect(nudgeTowardKeySpike(q, full, fullProgress, { buyTimeS: at, soldFor: sold })).toBe(q);
-  });
-
-  it('never moves a spike item above a key core item', () => {
-    const keyCore = new Set(['close_quarters']);
-    const isKeyCore = (id: string) => keyCore.has(id);
-    // #2 is a key core item standing between #1 and the spike item at #3
-    expect(nudgeTowardKeySpike(queue, owned, progress, { buyTimeS: (id) => times[id], isKeyCore })).toBe(queue);
-    // a key core item at #1 holds the spike item behind it too
-    const keyFirst = new Set(['extended_magazine']);
-    expect(nudgeTowardKeySpike(queue, owned, progress, { buyTimeS: (id) => times[id], isKeyCore: (id) => keyFirst.has(id) })).toBe(queue);
-    // without a key core item in front, the nudge still happens
-    expect(ids(nudgeTowardKeySpike(queue, owned, progress, { buyTimeS: (id) => times[id], isKeyCore: () => false }))[0]).toBe('long_range');
-  });
-
-  it('does not reorder the build\'s queue when the target comes from the inventory', () => {
-    const fromInventory = { ...progress, fromInventory: true };
-    expect(nudgeTowardKeySpike(queue, owned, fromInventory, { buyTimeS: (id) => times[id] })).toBe(queue);
-  });
-
-  it('never reaches past #3', () => {
-    const late = [entry('extended_magazine'), entry('close_quarters'), entry('monster_rounds'), entry('long_range')];
-    expect(nudgeTowardKeySpike(late, owned, progress, { buyTimeS: () => 600 })).toBe(late);
-  });
-});
-
 describe('recorded Infernus game (sapphire_infernus_full)', () => {
   // The player went vitality, then weapon; the meta build goes spirit first. Spirit stayed at 1,600 most of the game.
   const build = HEROES_DB.find((h) => h.id === 'infernus')!.builds[0];
   const order = spikeOrder(
-    inBuyOrder([...build.phases.early, ...build.phases.mid, ...build.phases.late], (id) =>
+    inBuyOrder(getBuildItemIds(build), (id) =>
       getHeroItemStat('infernus', id)?.buyTimeS
     )
   );
@@ -269,7 +192,7 @@ describe('recorded Infernus game (sapphire_infernus_full)', () => {
 });
 
 describe('spike windows', () => {
-  const order = spikeOrder(BUILD);
+  const order = spikeOrder(SPIKE_BUILD);
   const min = (m: number) => m * 60;
   const oneSpike = ['tesla_bullets', 'long_range'];
   const twoSpikes = [...oneSpike, 'slowing_hex', 'mystic_slow', 'mystic_vulnerability'];
@@ -288,7 +211,7 @@ describe('spike windows', () => {
     expect(investmentProgress(order, []).push).toBe('full');
     expect(investmentProgress(order, oneSpike).push).toBe('full');
     expect(investmentProgress(order, twoSpikes).push).toBe('top-up');
-    expect(investmentProgress(order, BUILD).push).toBe('off'); // all three done: no target
+    expect(investmentProgress(order, SPIKE_BUILD).push).toBe('off'); // all three done: no target
   });
 
   it('points out no item once the spike is past its window', () => {
@@ -307,19 +230,10 @@ describe('spike windows', () => {
     expect(spikeBadge('extra_health', cheap, investmentProgress(order, cheap, min(25))) !== null).toBe(false);
   });
 
-  it('does not nudge toward a spike past its window', () => {
-    const owned = ['tesla_bullets'];
-    const queue = [entry('extended_magazine'), entry('close_quarters'), entry('long_range'), entry('heroic_aura')];
-    const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
-    expect(ids(nudgeTowardKeySpike(queue, owned, investmentProgress(order, owned, min(12)), { buyTimeS: (id) => times[id] }))[0]).toBe(
-      'long_range'
-    );
-    expect(nudgeTowardKeySpike(queue, owned, investmentProgress(order, owned, min(16)), { buyTimeS: (id) => times[id] })).toBe(queue);
-  });
 });
 
 describe('spikeBadge top-up', () => {
-  const order = spikeOrder(BUILD);
+  const order = spikeOrder(SPIKE_BUILD);
   const owned = ['tesla_bullets', 'extended_magazine']; // weapon at 4,000
   const progress = investmentProgress(order, owned, 12 * 60);
 
@@ -340,7 +254,7 @@ describe('spikeBadge top-up', () => {
 });
 
 describe('paceStatus', () => {
-  const order = spikeOrder(BUILD);
+  const order = spikeOrder(SPIKE_BUILD);
   const status = (owned: string[], clockMin?: number) =>
     paceStatus(investmentProgress(order, owned, clockMin === undefined ? undefined : clockMin * 60), clockMin === undefined ? undefined : clockMin * 60);
 

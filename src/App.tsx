@@ -47,6 +47,7 @@ import {
   InventoryStatus,
   QueueEntry,
   effectiveOwnedSet,
+  getBuildItemIds,
   getSellCandidates,
   isInventoryFull,
   withLockedFirst,
@@ -513,7 +514,7 @@ export function App() {
     () =>
       spikeOrder(
         inBuyOrder(
-          [...activeBuild.phases.early, ...activeBuild.phases.mid, ...activeBuild.phases.late],
+          getBuildItemIds(activeBuild),
           (itemId) => getHeroItemStat(myHeroId, itemId)?.buyTimeS || undefined
         )
       ),

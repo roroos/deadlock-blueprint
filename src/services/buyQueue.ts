@@ -20,6 +20,7 @@ import {
   buildPurchaseOrder,
   dropAnsweredCounters,
   effectiveOwnedSet,
+  getBuildItemIds,
   getNextPurchases,
   getPurchaseCounters,
   getSlotPlans,
@@ -62,7 +63,7 @@ export function computeBuyQueue(input: BuyQueueInput): BuyQueue {
   const { build, ownedItems, investedItems, inventoryStatus, sellCandidates, investment, stat } = input;
   const buyTimeS = (itemId: string) => stat(itemId)?.buyTimeS || undefined;
   const isKeyCore = (itemId: string) => (stat(itemId)?.pickRate ?? 0) >= KEY_CORE_PICK_RATE;
-  const buildItemIds = [...build.phases.early, ...build.phases.mid, ...build.phases.late];
+  const buildItemIds = getBuildItemIds(build);
 
   // Counters: not against an enemy that an owned or build item already answers, and lane ones only for a lane threat
   const answered = new Set([...effectiveOwnedSet(ownedItems), ...buildItemIds]);

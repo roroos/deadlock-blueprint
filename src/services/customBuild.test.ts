@@ -17,6 +17,7 @@ import {
   getCustomCounters,
   parseBuildId,
   parseCustomBuild,
+  readableGroupName,
 } from './customBuild';
 import { getNextPurchases } from './recommendations';
 
@@ -182,6 +183,14 @@ describe('parseCustomBuild', () => {
     expect(parseCustomBuild(raw, getItemIdByApiId, getHeroIdByApiHeroId)!.heroId).toBeNull();
     expect(parseCustomBuild(undefined, getItemIdByApiId, getHeroIdByApiHeroId)).toBeNull();
     expect(parseCustomBuild({ hero_build: { name: 'x' } }, getItemIdByApiId, getHeroIdByApiHeroId)).toBeNull();
+  });
+});
+
+describe('readableGroupName', () => {
+  it("shows the game's default group keys as plain names", () => {
+    expect(readableGroupName('#Citadel_HeroBuilds_Early')).toBe('Early');
+    expect(readableGroupName(' Lane help ')).toBe('Lane help');
+    expect(readableGroupName(undefined)).toBe('');
   });
 });
 

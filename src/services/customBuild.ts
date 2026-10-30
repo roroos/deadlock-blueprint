@@ -54,6 +54,13 @@ export function parseBuildId(input: string): number | null {
 const SITUATIONAL_NAME =
   /situa|option|flex|counter|contre|anti|luxur|extra|altern|if needed|when needed|vs\b|against|si besoin|selon/i;
 
+/** A group the author did not rename keeps the game's text key ("#Citadel_HeroBuilds_Early"): shown as "Early". */
+export function readableGroupName(name: string | undefined): string {
+  const trimmed = name?.trim() ?? '';
+  const key = /^#Citadel_HeroBuilds?_(\w+)$/i.exec(trimmed);
+  return key ? key[1].replace(/_/g, ' ') : trimmed;
+}
+
 interface RawMod {
   ability_id?: number;
 }
@@ -100,7 +107,7 @@ export function parseCustomBuild(
       }
     }
     if (itemIds.length === 0) continue;
-    const name = category.name?.trim() || `#${groups.length + 1}`;
+    const name = readableGroupName(category.name) || `#${groups.length + 1}`;
     groups.push({
       name,
       description: category.description?.trim() || undefined,

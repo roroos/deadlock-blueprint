@@ -8,19 +8,22 @@ one category to 4,800, then the next, then the last, and the buy tab follows tha
 
 - **Spike line** above the buy cards: the three categories in the build's spike order, the souls in each
   (✓ at 4,800), and when players usually have that many spikes, as a range from rank 81+ to rank 1-40
-  ("by 10–12 min"). It turns amber only once the match clock is past the slower median: comparing everyone to
-  rank 81+ alone flagged half of the high-rank players themselves. The overlay shows the next spike only, with a
-  short pace line.
+  ("by 10–12 min"). It turns amber only once the match clock is past the slower median and the spike is still inside
+  its window (below): comparing everyone to rank 81+ alone flagged half of the high-rank players themselves. The
+  overlay shows the next spike only, with a short pace line.
 - **"Reaches the 4,800 … spike"** on a shown item that takes the *next* spike's category to 4,800. A neutral chip
   with the tab colour on its icon: amber stays for "late", violet for imbue hints. With a full inventory, the item
   the card says to sell leaves first, so a sale in the same category never promises a spike it takes back.
 - **Gentle nudge**: when #2 or #3 has that badge, the #1 does not, and players usually buy the two within
   2 minutes of each other, that item becomes #1. Nothing else is reordered, and a locked #1 stays locked.
-- **Only the first two spikes are pushed.** Once two categories are at 4,800, the third gets no pace to keep, and
-  the badge and nudge only point out a small top-up (an item adding 800 souls or less to it).
+- **A spike is pushed inside a window.** The first until 14 min, the second until 20, the third until 24 (any item
+  before 22 min, only a top-up of 800 souls or less after). Without a clock, the first two are pushed and the third
+  only as a top-up. Past its window the spike has no badge, no nudge and no amber; the line says so. See "How much it
+  matters" below.
+- **"Last 800 souls"**: when the target category already holds 4,000 or more and a shown item crosses 4,800 by adding
+  800 souls or less, the badge says so. Same chip, never a reorder.
 - **What counts**: the owned items, except those marked by hand ("Skip" or a click) that the scanner does not see
   in the inventory: skipping an item is not buying it. Without an inventory read, the hand-marked items count.
-
 - **Sales keep finished spikes.** With a full inventory the card suggests selling the weakest item, but never one
   whose sale drops a category from 4,800 to below it (unless the new item brings it back): the next weakest is
   suggested, or "inventory full" when every candidate would. Measured on 1,760 simulated games: 2% of the sales did
@@ -61,6 +64,25 @@ and its consumed component does not count again (`src/services/investments.ts`).
 | 2 | 15.3 min (third category: 800) | 17.4 min (third category: 1,600) |
 | 3 | 19.9 min (55% get there) | 23.2 min (49%) |
 
-At the same total spend and time, the first 4,800 goes with about +2.7 points of win rate at high rank, the
-third with +0.7 to +3. The second is neutral at high rank and +1.5 to +2 at low rank. These are correlations, not
-proof, which is why the app nudges rather than reorders the build.
+**How much it matters** (deadlock-api.com, 534,000 ranked players from 44,500 complete matches, Oct 23-29 2026;
+logistic regression controlling for held item value, unspent souls, team net-worth lead, hero and rank, errors
+clustered by match; win-rate points with 95% intervals; correlations, skill is not controlled):
+
+- Most of the raw gap (+7 to +8 points) is being ahead. At equal spend and lead the first 4,800 is worth
+  **+1.0 [+0.6, +1.4] at 9 min, +0.7 [+0.4, +1.0] at 12 min and 0.0 at 15 min**. A small threshold remains: at equal
+  spend the richest category at 4,800 beats 4,000 by +0.8 to +1.1 at 9-12 min, and 5,600 or 6,400 are no better.
+- Each later spike is worth +0.7 to +1 while it is early (the second at 15 min +0.9, the third at 20 min +0.7), +0.3
+  at 25 min and 0 at 30. Earlier is better, about 0.3 point per minute for the first spike.
+- That is why the app pushes a spike only inside a window (`SPIKE_PUSH_UNTIL_MIN`): the first until 14 min, the second
+  until 20, the third until 24 (any item before 22 min, only a top-up after). No reordering, badge or "late"
+  colour after that.
+- 38% of players sit at 4,000-4,799 before their first spike (median wait 1.9 min at rank 81+, 2.6 at 1-40), and 46%
+  of the crossings add only 800 (800 to 1,600 upgrades such as Extra Spirit to Improved Spirit). The badge then says
+  "Last 800 souls to the 4,800 Spirit spike"; it never reorders anything.
+- Which category pays most does not follow the bonus size (vitality +1.1, weapon +0.4), and per-hero differences are
+  mostly noise: the app follows each hero's build order and does not weight categories.
+- Only 32% of the items finishing the first two spikes are key core items (pick rate 70% or more), and core versus
+  flexible makes no difference to win rate.
+
+These are correlations, which is why the app nudges a spike item by at most 2 minutes and never above a key core
+item rather than reordering the build.

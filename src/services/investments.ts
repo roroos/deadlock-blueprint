@@ -45,6 +45,21 @@ const NUDGE_WINDOW_S = 120;
 
 const CATEGORIES: ItemCategory[] = ['weapon', 'spirit', 'vitality'];
 
+/**
+ * How long a spike is worth bending the order or warning about. Measured on 534,000 ranked players (deadlock-api.com,
+ * Oct 2026), compared at equal spend and team lead: the first 4,800 is worth about +1 point of win rate at 9-12 min
+ * and 0 at 15 min, each later one +0.7 to +1 while early and 0 by 30 min. After these minutes (spike 1, 2 and 3) the
+ * spike gets no reordering, no badge and no "late" colour.
+ */
+export const SPIKE_PUSH_UNTIL_MIN = [14, 20, 24];
+/** The third spike is pushed like the others before this minute, and only as a cheap top-up until its end. */
+export const THIRD_FULL_UNTIL_MIN = 22;
+/** A top-up badge: the category sits at this many souls or more, and the item adds at most CHEAP_TOP_UP. */
+const NEAR_MISS_FROM = 4000;
+
+/** How hard the target spike is pushed: any item, a cheap top-up only, or not at all. */
+export type SpikePush = 'full' | 'top-up' | 'off';
+
 export interface CategoryInvestment {
   category: ItemCategory;
   souls: number;
@@ -57,6 +72,7 @@ export interface InvestmentProgress {
   fromInventory: boolean; // the target is the category the player committed to, not the build's next one
   spikeNumber: number; // 1-3: which spike the target is (categories already at 4,800 + 1)
   pace: { highRank: number; lowRank: number } | null; // median minute players have that many spikes
+  push: SpikePush; // how hard the target is pushed at this point of the game (SPIKE_PUSH_UNTIL_MIN)
 }
 
 /**
@@ -116,7 +132,18 @@ export function spikeOrder(buildItemIds: string[]): ItemCategory[] {
   return [...order, ...rest];
 }
 
-export function investmentProgress(order: ItemCategory[], ownedItems: string[]): InvestmentProgress {
+/** Without a clock the first two spikes are pushed and the third only as a cheap top-up, as before the windows. */
+function spikePush(doneCount: number, hasTarget: boolean, clockS: number | undefined): SpikePush {
+  if (!hasTarget) return 'off';
+  if (doneCount >= CORE_SPIKES) {
+    if (clockS === undefined) return 'top-up';
+    if (clockS < THIRD_FULL_UNTIL_MIN * 60) return 'full';
+    return clockS < SPIKE_PUSH_UNTIL_MIN[2] * 60 ? 'top-up' : 'off';
+  }
+  return clockS !== undefined && clockS >= SPIKE_PUSH_UNTIL_MIN[doneCount] * 60 ? 'off' : 'full';
+}
+
+export function investmentProgress(order: ItemCategory[], ownedItems: string[], clockS?: number): InvestmentProgress {
   const souls = investedSouls(ownedItems);
   const inOrder = order.map((category) => ({ category, souls: souls[category], done: souls[category] >= KEY_SPIKE }));
   const doneCount = inOrder.filter((c) => c.done).length;
@@ -135,6 +162,7 @@ export function investmentProgress(order: ItemCategory[], ownedItems: string[]):
     fromInventory: target !== buildTarget,
     spikeNumber: doneCount + 1,
     pace: target ? { highRank: HIGH_RANK_SPIKE_MINUTES[doneCount], lowRank: LOW_RANK_SPIKE_MINUTES[doneCount] } : null,
+    push: spikePush(doneCount, target !== null, clockS),
   };
 }
 
@@ -168,8 +196,9 @@ export function keySpikeReached(itemId: string, ownedItems: string[], soldId?: s
 }
 
 /**
- * Whether this item is worth pointing out: it takes the target category to 4,800, and that is one of the first
- * two spikes or, for the third, a small top-up.
+ * Whether this item is worth pointing out: it takes the target category to 4,800 while that spike is still worth
+ * pushing (progress.push): any item for the first two spikes and the third while it is early, a small top-up
+ * for the third after that.
  */
 export function isSpikeWorthIt(
   itemId: string,
@@ -178,11 +207,30 @@ export function isSpikeWorthIt(
   soldId?: string
 ): boolean {
   const target = progress.target?.category;
-  if (!target || keySpikeReached(itemId, ownedItems, soldId) !== target) return false;
-  if (progress.spikeNumber <= CORE_SPIKES) return true;
+  if (!target || progress.push === 'off' || keySpikeReached(itemId, ownedItems, soldId) !== target) return false;
+  if (progress.push === 'full') return true;
   return (
     investedSouls(afterPurchase(itemId, ownedItems, soldId))[target] - investedSouls(ownedItems)[target] <= CHEAP_TOP_UP
   );
+}
+
+/**
+ * The souls this item adds to the target category when it finishes the 4,800 from at least 4,000 and adds no more
+ * than a top-up (800): the "last 800 souls" badge, shown instead of the plain spike badge. 38% of players spend time
+ * at 4,000-4,799 before their first spike (median wait 1.9 min at rank 81+, 2.6 at 1-40; 46% of the crossings add
+ * only 800, mostly an 800 to 1,600 upgrade). It never reorders anything.
+ */
+export function spikeTopUp(
+  itemId: string,
+  ownedItems: string[],
+  progress: InvestmentProgress,
+  soldId?: string
+): number | null {
+  const target = progress.target?.category;
+  if (!target || !isSpikeWorthIt(itemId, ownedItems, progress, soldId)) return null;
+  const before = investedSouls(ownedItems)[target];
+  const added = investedSouls(afterPurchase(itemId, ownedItems, soldId))[target] - before;
+  return before >= NEAR_MISS_FROM && added <= CHEAP_TOP_UP ? added : null;
 }
 
 /**

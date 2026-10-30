@@ -10,6 +10,7 @@ import {
   keySpikeReached,
   nudgeTowardKeySpike,
   spikeOrder,
+  spikeTopUp,
 } from './investments';
 import { QueueEntry } from './recommendations';
 
@@ -264,5 +265,76 @@ describe('recorded Infernus game (sapphire_infernus_full)', () => {
   it('follows vitality, then weapon, as the player built them', () => {
     expect(targetAt(13)).toBe('vitality');
     expect(targetAt(22)).toBe('weapon');
+  });
+});
+
+describe('spike windows', () => {
+  const order = spikeOrder(BUILD);
+  const min = (m: number) => m * 60;
+  const oneSpike = ['tesla_bullets', 'long_range'];
+  const twoSpikes = [...oneSpike, 'slowing_hex', 'mystic_slow', 'mystic_vulnerability'];
+
+  it('pushes the first spike until 14 min, the second until 20, the third until 24', () => {
+    expect(investmentProgress(order, [], min(13)).push).toBe('full');
+    expect(investmentProgress(order, [], min(14)).push).toBe('off');
+    expect(investmentProgress(order, oneSpike, min(19)).push).toBe('full');
+    expect(investmentProgress(order, oneSpike, min(20)).push).toBe('off');
+    expect(investmentProgress(order, twoSpikes, min(21)).push).toBe('full');
+    expect(investmentProgress(order, twoSpikes, min(22)).push).toBe('top-up');
+    expect(investmentProgress(order, twoSpikes, min(24)).push).toBe('off');
+  });
+
+  it('without a clock pushes the first two spikes and the third only as a top-up, as before', () => {
+    expect(investmentProgress(order, []).push).toBe('full');
+    expect(investmentProgress(order, oneSpike).push).toBe('full');
+    expect(investmentProgress(order, twoSpikes).push).toBe('top-up');
+    expect(investmentProgress(order, BUILD).push).toBe('off'); // all three done: no target
+  });
+
+  it('points out no item once the spike is past its window', () => {
+    const early = investmentProgress(order, ['tesla_bullets'], min(10));
+    expect(isSpikeWorthIt('long_range', ['tesla_bullets'], early)).toBe(true);
+    const late = investmentProgress(order, ['tesla_bullets'], min(15));
+    expect(isSpikeWorthIt('long_range', ['tesla_bullets'], late)).toBe(false);
+  });
+
+  it('points out any item for the third spike before 22 min, a top-up only after', () => {
+    const owned = [...twoSpikes, 'healbane'];
+    expect(isSpikeWorthIt('metal_skin', owned, investmentProgress(order, owned, min(21)))).toBe(true);
+    expect(isSpikeWorthIt('metal_skin', owned, investmentProgress(order, owned, min(23)))).toBe(false);
+    const cheap = [...twoSpikes, 'metal_skin', 'extra_regen'];
+    expect(isSpikeWorthIt('extra_health', cheap, investmentProgress(order, cheap, min(23)))).toBe(true);
+    expect(isSpikeWorthIt('extra_health', cheap, investmentProgress(order, cheap, min(25)))).toBe(false);
+  });
+
+  it('does not nudge toward a spike past its window', () => {
+    const owned = ['tesla_bullets'];
+    const queue = [entry('extended_magazine'), entry('close_quarters'), entry('long_range'), entry('heroic_aura')];
+    const times: Record<string, number> = { extended_magazine: 600, close_quarters: 620, long_range: 700 };
+    expect(ids(nudgeTowardKeySpike(queue, owned, investmentProgress(order, owned, min(12)), (id) => times[id]))[0]).toBe(
+      'long_range'
+    );
+    expect(nudgeTowardKeySpike(queue, owned, investmentProgress(order, owned, min(16)), (id) => times[id])).toBe(queue);
+  });
+});
+
+describe('spikeTopUp', () => {
+  const order = spikeOrder(BUILD);
+  const owned = ['tesla_bullets', 'extended_magazine']; // weapon at 4,000
+  const progress = investmentProgress(order, owned, 12 * 60);
+
+  it('gives the last souls when an item crosses 4,800 from 4,000 or more', () => {
+    expect(spikeTopUp('monster_rounds', owned, progress)).toBe(800);
+    expect(spikeTopUp('titanic_magazine', owned, progress)).toBe(800); // 800 to 1,600 upgrade
+  });
+
+  it('is null for an item adding more than 800, or from below 4,000', () => {
+    expect(spikeTopUp('long_range', owned, progress)).toBeNull();
+    const far = ['tesla_bullets'];
+    expect(spikeTopUp('long_range', far, investmentProgress(order, far, 12 * 60))).toBeNull();
+  });
+
+  it('is null once the spike is past its window', () => {
+    expect(spikeTopUp('monster_rounds', owned, investmentProgress(order, owned, 15 * 60))).toBeNull();
   });
 });

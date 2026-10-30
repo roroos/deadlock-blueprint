@@ -60,7 +60,6 @@ import {
 } from './services/recommendations';
 import {
   CHEAP_TOP_UP,
-  CORE_SPIKES,
   KEY_CORE_PICK_RATE,
   KEY_SPIKE,
   inBuyOrder,
@@ -71,6 +70,7 @@ import {
   nudgeTowardKeySpike,
   sellKeepsSpikes,
   spikeOrder,
+  spikeTopUp,
 } from './services/investments';
 import {
   isMatchLogEnabled,
@@ -565,7 +565,12 @@ export function App() {
     () => investmentItems(ownedItems, readManualOwned(), inventoryStatus?.itemIds ?? null),
     [ownedItems, inventoryStatus]
   );
-  const investment = useMemo(() => investmentProgress(buildSpikeOrder, investedItems), [buildSpikeOrder, investedItems]);
+  // The clock by the minute: the push windows of a spike (SPIKE_PUSH_UNTIL_MIN) do not need the second
+  const clockMinute = clockS === undefined ? undefined : Math.floor(clockS / 60);
+  const investment = useMemo(
+    () => investmentProgress(buildSpikeOrder, investedItems, clockMinute === undefined ? undefined : clockMinute * 60),
+    [buildSpikeOrder, investedItems, clockMinute]
+  );
   // A sale that would drop a finished 4,800 spike is never suggested: the next weakest item is
   const canSell = useCallback(
     (soldId: string, itemId: string) => sellKeepsSpikes(investedItems, soldId, itemId),
@@ -1117,6 +1122,8 @@ export function App() {
     const plan = slotPlans.get(itemId);
     const soldId = plan?.kind === 'sell' ? plan.itemId : undefined;
     if (!category || !isSpikeWorthIt(itemId, investedItems, investment, soldId)) return null;
+    // The last 800 souls of a category sitting at 4,000+: the same chip, said as a top-up (never a reorder)
+    const topUp = spikeTopUp(itemId, investedItems, investment, soldId);
     return (
       <div
         className={`flex items-center gap-1.5 rounded-lg border font-bold bg-white/5 border-white/20 text-slate-100 ${
@@ -1125,7 +1132,11 @@ export function App() {
         title={t('invest.spikeTitle')}
       >
         <TrendingUp className={`w-3 h-3 shrink-0 ${SHOP_TABS[category].className}`} aria-hidden />
-        <span>{t('invest.spike', t(`category.${category}`), formatNumber(KEY_SPIKE))}</span>
+        <span>
+          {topUp === null
+            ? t('invest.spike', t(`category.${category}`), formatNumber(KEY_SPIKE))
+            : t('invest.topUp', t(`category.${category}`), formatNumber(KEY_SPIKE), formatNumber(topUp))}
+        </span>
       </div>
     );
   };
@@ -1136,7 +1147,7 @@ export function App() {
    * Compact (overlay): the next one only, with a short pace line.
    */
   const renderInvestment = (compact = false) => {
-    const { categories, target, spikeNumber, pace } = investment;
+    const { categories, target, spikeNumber, pace, push } = investment;
     if (!target || !pace) {
       return (
         <p className="text-small text-slate-400" title={t('invest.title')}>
@@ -1144,12 +1155,14 @@ export function App() {
         </p>
       );
     }
-    // Past the first two spikes, the third is only worth a cheap top-up: no pace to keep
-    const coreDone = spikeNumber > CORE_SPIKES;
+    // Past its window (SPIKE_PUSH_UNTIL_MIN) a spike is not pushed any more, and its pace is no longer a warning;
+    // the third one is only worth a cheap top-up when the clock is unknown or late
     const range = `${Math.round(pace.highRank)}–${Math.round(pace.lowRank)}`;
     const late = String(Math.round(pace.lowRank));
-    const behind = !coreDone && clockS !== undefined && clockS > pace.lowRank * 60;
-    const paceLine = coreDone ? (
+    const behind = push === 'full' && clockS !== undefined && clockS > pace.lowRank * 60;
+    const paceLine = push === 'off' ? (
+      <span className="text-slate-400">{compact ? t('invest.offShort', spikeNumber) : t('invest.off', spikeNumber)}</span>
+    ) : push === 'top-up' ? (
       <span className="text-slate-400">
         {compact ? t('invest.coreDoneShort', formatNumber(CHEAP_TOP_UP)) : t('invest.coreDone', formatNumber(CHEAP_TOP_UP))}
       </span>

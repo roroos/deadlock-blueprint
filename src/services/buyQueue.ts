@@ -164,45 +164,51 @@ export interface DueContext {
 
 const ROLE_RANK: Record<CounterRole, number> = { fed: 0, lane: 1, team: 2 };
 
+/** The queue's own items with the time each is due: its usual buy time, an item without one following the one before. */
+function withDueTimes(entries: QueueEntry[], buyTimeS: DueContext['buyTimeS']) {
+  let due = 0;
+  return entries.map((entry) => {
+    due = buyTimeS(entry.item.id) ?? due;
+    return { entry, due };
+  });
+}
+
+/**
+ * When a counter is due. A Tier 3-4 counter against a fed enemy cannot be bought at once: it is due at its usual buy
+ * time, which is already past when an enemy is marked fed late, so it still goes to the front then.
+ */
+function counterDueS(counter: QueueEntry, ctx: DueContext): number {
+  if (counter.role === 'lane') return ctx.laneDueS;
+  if (counter.role === 'fed' && counter.item.tier <= 2) return 0;
+  return ctx.buyTimeS(counter.item.id) ?? ctx.nowS;
+}
+
 /**
  * Places the counters outside the build by the time they are due, among the queue's other items (which keep their
- * order): a counter against a fed enemy at once (a Tier 3-4 one at its usual buy time), a lane counter right after
- * the first two items, a team counter at its usual buy time once the first spike is done. None goes ahead of a key core item that is already due. Team counters
- * before that wait out of the queue (the counters panel still lists them). Measured on 1,760 simulated lineups, the
- * queue sorted by usual buy time put the lane counter at a median 12,000 souls, after laning.
+ * order): a counter against a fed enemy at once, a lane counter right after the first two items, a team counter at
+ * its usual buy time once the first spike is done. None goes ahead of a key core item that is already due. Team
+ * counters before that wait out of the queue (the counters panel still lists them). Measured on 1,760 simulated
+ * lineups, the queue sorted by usual buy time put the lane counter at a median 12,000 souls, after laning.
  */
 export function placeCounters(queue: QueueEntry[], ctx: DueContext): QueueEntry[] {
-  const counters = queue.filter((entry) => entry.role && (entry.role !== 'team' || ctx.teamReleased));
-  const base = queue.filter((entry) => !entry.role);
   if (!queue.some((entry) => entry.role)) return queue;
-
-  // The due time of the other items: their usual buy time, an item without one following the item before it
-  let last = 0;
-  const out = base.map((entry) => {
-    last = ctx.buyTimeS(entry.item.id) ?? last;
-    return { entry, due: last };
-  });
-  let floor = 0; // after the last key core item that is already due
-  out.forEach(({ entry, due }, index) => {
-    if (ctx.isKeyCore(entry.item.id) && due <= ctx.nowS) floor = index + 1;
-  });
-
-  // A Tier 3-4 counter against a fed enemy cannot be bought at once: it is due at its usual buy time, which is
-  // already past when an enemy is marked fed late, so it still goes to the front then
-  const dueOf = (entry: QueueEntry) =>
-    entry.role === 'lane'
-      ? ctx.laneDueS
-      : entry.role === 'fed' && entry.item.tier <= 2
-        ? 0
-        : ctx.buyTimeS(entry.item.id) ?? ctx.nowS;
-  const byDue = counters
-    .map((entry) => ({ entry, due: dueOf(entry) }))
+  const items = withDueTimes(queue.filter((entry) => !entry.role), ctx.buyTimeS);
+  const counters = queue
+    .filter((entry) => entry.role && (entry.role !== 'team' || ctx.teamReleased))
+    .map((entry) => ({ entry, due: counterDueS(entry, ctx) }))
     .sort((a, b) => a.due - b.due || ROLE_RANK[a.entry.role!] - ROLE_RANK[b.entry.role!]);
-  for (const counter of byDue) {
-    const after = out.findIndex((other, index) => index >= floor && other.due > counter.due);
-    out.splice(after < 0 ? out.length : after, 0, counter);
+
+  // No counter goes before the last key core item that is already due
+  let afterDueKeyCore = 0;
+  items.forEach(({ entry, due }, index) => {
+    if (ctx.isKeyCore(entry.item.id) && due <= ctx.nowS) afterDueKeyCore = index + 1;
+  });
+
+  for (const counter of counters) {
+    const next = items.findIndex((item, index) => index >= afterDueKeyCore && item.due > counter.due);
+    items.splice(next < 0 ? items.length : next, 0, counter);
   }
-  return out.map((x) => x.entry);
+  return items.map((item) => item.entry);
 }
 
 /** A spike item may move to #1 only when players usually buy it this close to the current #1 (seconds). */

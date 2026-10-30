@@ -58,12 +58,16 @@ export function effectiveOwnedSet(ownedItems: string[]): Set<string> {
   return owned;
 }
 
+type PriorityItem = TacticalRecommendation['priorityItems'][number];
+
+const isFedReason = (reason: string) => reason.startsWith('🔥');
+const isTeamReason = (reason: string) => reason.startsWith('[TEAM]');
+
 /**
  * A counter only goes into the purchase queue when the threat is real: it answers the enemy in my lane, or
  * at least two different enemies (one team enemy alone is not worth bending the build for).
  */
-const isStrongCounter = (r: TacticalRecommendation['priorityItems'][number]) =>
-  r.urgency === 'Critique (En Face / Lane)' || r.reasons.length >= 2;
+const isStrongCounter = (r: PriorityItem) => r.urgency === 'Critique (En Face / Lane)' || r.reasons.length >= 2;
 
 /**
  * A lane threat worth a counter: a lane enemy to avoid (my real win rate against it), a lane enemy marked fed, or a
@@ -89,16 +93,18 @@ export interface CounterContext {
  * "[TEAM]" nor fed "🔥"): the lane items of the first minutes. An item against both lane enemies (two reasons)
  * is still a lane counter; one that also answers a team enemy or a fed enemy is not.
  */
-const isLaneOnlyCounter = (r: TacticalRecommendation['priorityItems'][number]) =>
-  r.urgency === 'Critique (En Face / Lane)' &&
-  r.reasons.every((reason) => !reason.startsWith('🔥') && !reason.startsWith('[TEAM]'));
+const isLaneOnlyCounter = (r: PriorityItem) =>
+  r.urgency === 'Critique (En Face / Lane)' && r.reasons.every((reason) => !isFedReason(reason) && !isTeamReason(reason));
 
 /**
  * A counter's role in the queue: against a fed enemy, my lane (Tier 1-2: the lane items of the first minutes), or the
  * team. A Tier 3-4 counter against my lane cannot be bought in the lane phase: it is a team counter by timing.
  */
-export const counterRole = (r: TacticalRecommendation['priorityItems'][number]): CounterRole =>
-  r.reasons.some((reason) => reason.startsWith('🔥')) ? 'fed' : isLaneOnlyCounter(r) && r.item.tier <= 2 ? 'lane' : 'team';
+export function counterRole(r: PriorityItem): CounterRole {
+  if (r.reasons.some(isFedReason)) return 'fed';
+  if (isLaneOnlyCounter(r) && r.item.tier <= 2) return 'lane';
+  return 'team';
+}
 
 /**
  * The counters whose threat is not answered yet. An enemy is answered when one of its best counters (the three the
@@ -120,23 +126,26 @@ export function dropAnsweredCounters(
   });
 }
 
+/** Whether a counter goes into the queue: a lane-only one needs a lane threat, and a Tier 1-2 one leaves with laning. */
+function isQueuedCounter(r: PriorityItem, { laneThreat = true, laneOver = false }: CounterContext) {
+  if (!isStrongCounter(r)) return false;
+  if (!isLaneOnlyCounter(r)) return true;
+  if (!laneThreat) return false;
+  return !(laneOver && r.item.tier <= 2);
+}
+
 /**
  * The counter items included in the purchase queue and highlighted in the interface: at most one Tier 1-2
  * and one Tier 3-4, so that following the queue still follows the build. A lane-only counter needs a real lane
  * threat, and a Tier 1-2 one leaves once laning is over (a lane counter bought at a median 15 min was a counter to
  * a lane that was over). Counters against a fed enemy or against two enemies are unaffected.
  */
-export const getPurchaseCounters = (
-  priorityItems: TacticalRecommendation['priorityItems'],
-  { laneThreat = true, laneOver = false }: CounterContext = {}
-) => {
-  const strong = priorityItems.filter(
-    (r) =>
-      isStrongCounter(r) &&
-      (!isLaneOnlyCounter(r) || (laneThreat && !(laneOver && r.item.tier <= 2)))
-  );
-  return [...strong.filter((r) => r.item.tier <= 2).slice(0, 1), ...strong.filter((r) => r.item.tier >= 3).slice(0, 1)];
-};
+export function getPurchaseCounters(priorityItems: PriorityItem[], context: CounterContext = {}) {
+  const queued = priorityItems.filter((r) => isQueuedCounter(r, context));
+  const tier12 = queued.filter((r) => r.item.tier <= 2);
+  const tier34 = queued.filter((r) => r.item.tier >= 3);
+  return [...tier12.slice(0, 1), ...tier34.slice(0, 1)];
+}
 
 /**
  * Full purchase order of the build, counters included:

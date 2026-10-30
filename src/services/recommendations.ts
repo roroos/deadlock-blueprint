@@ -15,10 +15,14 @@ export interface InventoryStatus {
   unmatched: number;
 }
 
+/** What kind of counter a queued item outside the build is (placeCounters): against a fed enemy, my lane, or the team. */
+export type CounterRole = 'fed' | 'lane' | 'team';
+
 export interface QueueEntry {
   item: DeadlockItem;
   reason: string;
   phase?: 'early' | 'mid' | 'late' | 'situational'; // phase of the active build that holds the item
+  role?: CounterRole; // set on a counter that is not part of the build
 }
 
 export type SlotPlan =
@@ -96,6 +100,33 @@ const isLaneOnlyCounter = (r: TacticalRecommendation['priorityItems'][number]) =
   r.reasons.every((reason) => !reason.startsWith('🔥') && !reason.startsWith('[TEAM]'));
 
 /**
+ * A counter's role in the queue: against a fed enemy, my lane (Tier 1-2: the lane items of the first minutes), or the
+ * team. A Tier 3-4 counter against my lane cannot be bought in the lane phase: it is a team counter by timing.
+ */
+export const counterRole = (r: TacticalRecommendation['priorityItems'][number]): CounterRole =>
+  r.reasons.some((reason) => reason.startsWith('🔥')) ? 'fed' : isLaneOnlyCounter(r) && r.item.tier <= 2 ? 'lane' : 'team';
+
+/**
+ * The counters whose threat is not answered yet. An enemy is answered when one of its best counters (the three the
+ * cards show) is owned or in the build, bought or still to come: nothing outside the build is queued against it.
+ * Measured on 1,760 simulated lineups, 24% of the lane enemies already had one of their top 3 counters in the build.
+ * An item that is itself owned or in the build keeps its counter reason, and a counter no enemy lists (a lane tip)
+ * is kept.
+ */
+export function dropAnsweredCounters(
+  priorityItems: TacticalRecommendation['priorityItems'],
+  alerts: { counters: { item: { id: string } }[] }[],
+  answeredIds: ReadonlySet<string>
+): TacticalRecommendation['priorityItems'] {
+  const answered = new Set(alerts.filter((a) => a.counters.some((c) => answeredIds.has(c.item.id))));
+  return priorityItems.filter((r) => {
+    if (answeredIds.has(r.item.id)) return true;
+    const countered = alerts.filter((a) => a.counters.some((c) => c.item.id === r.item.id));
+    return countered.length === 0 || countered.some((a) => !answered.has(a));
+  });
+}
+
+/**
  * The counter items included in the purchase queue and highlighted in the interface: at most one Tier 1-2
  * and one Tier 3-4, so that following the queue still follows the build. A lane-only counter needs a real lane
  * threat, and a Tier 1-2 one leaves once laning is over (a lane counter bought at a median 15 min was a counter to
@@ -138,7 +169,9 @@ export function buildPurchaseOrder(
     const counter = counters.find((r) => r.item.id === id);
     if (counter) reason = counter.reasons[0] ?? t(item.tier <= 2 ? 'reason.laneCounter' : 'reason.teamfightCounter');
     seen.add(id);
-    queue.push({ item, phase: phaseOf(id), reason });
+    const phase = phaseOf(id);
+    // A counter outside the build gets its role: placeCounters times it (a counter in the build keeps its place)
+    queue.push({ item, phase, reason, ...(counter && !phase ? { role: counterRole(counter) } : {}) });
   };
 
   build.phases.early.slice(0, 2).forEach((id) => pushItem(id, t('reason.earlyPriority')));
@@ -232,6 +265,96 @@ export function getNextPurchases(
     return [...sortByBuyTime(midAndLate, buyTimeS), ...sortByBuyTime(leftoverEarly, buyTimeS)];
   }
   return sortByBuyTime(unowned, buyTimeS);
+}
+
+/**
+ * Median souls spent on build items by game minute (44 meta builds, usual buy times, 2026-10-26 data). Gives a clock
+ * when none is read: the same curve puts about 6,400 souls at 10 min, the end of laning (LANE_END_SOULS).
+ */
+const SOULS_BY_MINUTE: [number, number][] = [
+  [0, 0],
+  [5, 1600],
+  [8, 4000],
+  [10, 6400],
+  [12, 8000],
+  [15, 12000],
+  [20, 17600],
+  [25, 26400],
+  [30, 34400],
+];
+
+/** Game seconds estimated from the souls spent, by the curve above (capped at 40 min). */
+export function estimateClockS(soulsSpent: number): number {
+  const points = SOULS_BY_MINUTE;
+  if (soulsSpent >= points[points.length - 1][1]) return 40 * 60;
+  const i = points.findIndex(([, souls]) => souls > soulsSpent);
+  const [m0, s0] = points[i - 1] ?? points[0];
+  const [m1, s1] = points[i];
+  return Math.round((m0 + ((soulsSpent - s0) / (s1 - s0)) * (m1 - m0)) * 60);
+}
+
+/** A lane counter comes right after the build's first two items: just after the second one's usual buy time. */
+export function laneCounterDueS(buildItemIds: string[], buyTimeS: (itemId: string) => number | undefined): number {
+  const times = buildItemIds
+    .map((id) => buyTimeS(id))
+    .filter((time): time is number => time !== undefined)
+    .sort((a, b) => a - b);
+  return (times[1] ?? 240) + 1;
+}
+
+export interface DueContext {
+  /** The game clock in seconds (read, or estimated from the souls spent) */
+  nowS: number;
+  buyTimeS: (itemId: string) => number | undefined;
+  /** A key core item: bought in 70% or more of the hero's games (KEY_CORE_PICK_RATE) */
+  isKeyCore: (itemId: string) => boolean;
+  /** When a lane counter is due (laneCounterDueS) */
+  laneDueS: number;
+  /** The first 4,800 spike is done, or its window is over: the team counters (not against a fed enemy) are released */
+  teamReleased: boolean;
+}
+
+const ROLE_RANK: Record<CounterRole, number> = { fed: 0, lane: 1, team: 2 };
+
+/**
+ * Places the counters outside the build by the time they are due, among the queue's other items (which keep their
+ * order): a counter against a fed enemy at once (a Tier 3-4 one at its usual buy time), a lane counter right after
+ * the first two items, a team counter at its usual buy time once the first spike is done. None goes ahead of a key core item that is already due. Team counters
+ * before that wait out of the queue (the counters panel still lists them). Measured on 1,760 simulated lineups, the
+ * queue sorted by usual buy time put the lane counter at a median 12,000 souls, after laning.
+ */
+export function placeCounters(queue: QueueEntry[], ctx: DueContext): QueueEntry[] {
+  const counters = queue.filter((entry) => entry.role && (entry.role !== 'team' || ctx.teamReleased));
+  const base = queue.filter((entry) => !entry.role);
+  if (!queue.some((entry) => entry.role)) return queue;
+
+  // The due time of the other items: their usual buy time, an item without one following the item before it
+  let last = 0;
+  const out = base.map((entry) => {
+    last = ctx.buyTimeS(entry.item.id) ?? last;
+    return { entry, due: last };
+  });
+  let floor = 0; // after the last key core item that is already due
+  out.forEach(({ entry, due }, index) => {
+    if (ctx.isKeyCore(entry.item.id) && due <= ctx.nowS) floor = index + 1;
+  });
+
+  // A Tier 3-4 counter against a fed enemy cannot be bought at once: it is due at its usual buy time, which is
+  // already past when an enemy is marked fed late, so it still goes to the front then
+  const dueOf = (entry: QueueEntry) =>
+    entry.role === 'lane'
+      ? ctx.laneDueS
+      : entry.role === 'fed' && entry.item.tier <= 2
+        ? 0
+        : ctx.buyTimeS(entry.item.id) ?? ctx.nowS;
+  const byDue = counters
+    .map((entry) => ({ entry, due: dueOf(entry) }))
+    .sort((a, b) => a.due - b.due || ROLE_RANK[a.entry.role!] - ROLE_RANK[b.entry.role!]);
+  for (const counter of byDue) {
+    const after = out.findIndex((other, index) => index >= floor && other.due > counter.due);
+    out.splice(after < 0 ? out.length : after, 0, counter);
+  }
+  return out.map((x) => x.entry);
 }
 
 /** The locked #1 first, the rest in order. */

@@ -4,7 +4,10 @@ import { makeTranslate } from '../i18n';
 import {
   InventoryStatus,
   buildPurchaseOrder,
+  counterRole,
+  dropAnsweredCounters,
   effectiveOwnedSet,
+  estimateClockS,
   getComponentIds,
   getNextPurchases,
   getPurchaseCounters,
@@ -13,6 +16,8 @@ import {
   hasLaneThreat,
   isInventoryFull,
   isLaneOver,
+  laneCounterDueS,
+  placeCounters,
   withLockedFirst,
 } from './recommendations';
 import { sellKeepsSpikes } from './investments';
@@ -189,6 +194,138 @@ describe('lane counters', () => {
     expect(isLaneOver(undefined, 6399)).toBe(false);
     expect(isLaneOver(undefined, 6400)).toBe(true);
     expect(isLaneOver(300, 9000)).toBe(false); // the clock wins when it is read
+  });
+});
+
+const build_without = (id: string) => build({ early: ['extra_spirit'].filter((x) => x !== id) });
+
+describe('due-time ordering', () => {
+  const times: Record<string, number> = {
+    extra_spirit: 160,
+    extended_magazine: 214,
+    extra_regen: 280,
+    improved_spirit: 560,
+    titanic_magazine: 720,
+    spirit_lifesteal: 870,
+    boundless_spirit: 1500,
+    metal_skin: 900,
+  };
+  const entry = (id: string, role?: 'fed' | 'lane' | 'team') => ({ item: ITEMS_DB[id], reason: '', ...(role ? { role } : {}) });
+  const ctx = (over = {}) => ({
+    nowS: 0,
+    buyTimeS: (id: string) => times[id],
+    isKeyCore: () => false,
+    laneDueS: 215,
+    teamReleased: false,
+    ...over,
+  });
+  const ids = (queue: ReturnType<typeof entry>[]) => queue.map((e) => e.item.id);
+  const build = ['improved_spirit', 'titanic_magazine', 'spirit_lifesteal'].map((id) => entry(id));
+
+  it('puts a counter against a fed enemy first, a lane counter right after the first two items', () => {
+    const queue = [entry('extra_spirit'), entry('extended_magazine'), ...build, entry('extra_charge', 'fed'), entry('extra_regen', 'lane')];
+    expect(ids(placeCounters(queue, ctx({ teamReleased: true })))).toEqual([
+      'extra_charge',
+      'extra_spirit',
+      'extended_magazine',
+      'extra_regen',
+      'improved_spirit',
+      'titanic_magazine',
+      'spirit_lifesteal',
+    ]);
+  });
+
+  it('times a Tier 3-4 counter against a fed enemy by its usual buy time, at the front once that has passed', () => {
+    const queue = [entry('extra_spirit'), entry('extended_magazine'), ...build, entry('metal_skin', 'fed')];
+    const early = ids(placeCounters(queue, ctx({ nowS: 100 })));
+    expect(early.indexOf('metal_skin')).toBe(early.length - 1); // usual buy time 900 s, after the whole build here
+    expect(ids(placeCounters(queue, ctx({ nowS: 1000 })))[0]).toBe('extra_spirit');
+    const late = ids(placeCounters([entry('improved_spirit'), entry('metal_skin', 'fed')], ctx({ nowS: 1000 })));
+    expect(late).toEqual(['improved_spirit', 'metal_skin']);
+  });
+
+  it('never puts a counter ahead of a key core item that is already due', () => {
+    const queue = [entry('extra_spirit'), entry('extended_magazine'), entry('improved_spirit'), entry('extra_charge', 'fed')];
+    const keyCore = (id: string) => id === 'extended_magazine' || id === 'improved_spirit';
+    // 10 min: improved_spirit (560 s) and extended_magazine are due, extra_spirit is not a key core item
+    expect(ids(placeCounters(queue, ctx({ nowS: 600, isKeyCore: keyCore })))).toEqual([
+      'extra_spirit',
+      'extended_magazine',
+      'improved_spirit',
+      'extra_charge',
+    ]);
+    // 5 min: improved_spirit is not due yet, the fed counter goes ahead of it but not of the due extended_magazine
+    expect(ids(placeCounters(queue, ctx({ nowS: 300, isKeyCore: keyCore })))).toEqual([
+      'extra_spirit',
+      'extended_magazine',
+      'extra_charge',
+      'improved_spirit',
+    ]);
+  });
+
+  it('keeps a team counter out of the queue until the first spike, unless it is against a fed enemy', () => {
+    const queue = [...build, entry('metal_skin', 'team'), entry('extra_regen', 'fed')];
+    expect(ids(placeCounters(queue, ctx()))).toEqual(['extra_regen', 'improved_spirit', 'titanic_magazine', 'spirit_lifesteal']);
+    const released = ids(placeCounters(queue, ctx({ teamReleased: true })));
+    expect(released).toContain('metal_skin');
+    // at its usual buy time (900 s), after the items bought before that
+    expect(released.indexOf('metal_skin')).toBeGreaterThan(released.indexOf('spirit_lifesteal'));
+  });
+
+  it('returns the queue itself when it holds no counter', () => {
+    const queue = [entry('extra_spirit'), ...build];
+    expect(placeCounters(queue, ctx())).toBe(queue);
+  });
+
+  it('gives each counter its role: fed, a Tier 1-2 lane counter, or team', () => {
+    const rec = (id: string, reasons: string[], urgency: TacticalRecommendation['priorityItems'][number]['urgency'] = 'Critique (En Face / Lane)') => ({
+      item: ITEMS_DB[id],
+      reasons,
+      urgency,
+    });
+    expect(counterRole(rec('extra_regen', ['🔥 [LANE] Sustain vs Ivy']))).toBe('fed');
+    expect(counterRole(rec('extra_regen', ['[LANE] Sustain vs Abrams', '[LANE] Sustain vs Kelvin']))).toBe('lane');
+    expect(counterRole(rec('metal_skin', ['[LANE] Metal Skin vs Abrams']))).toBe('team'); // Tier 3: cannot be a lane item
+    expect(counterRole(rec('extra_regen', ['[LANE] Sustain vs Abrams', '[TEAM] Sustain vs Kelvin']))).toBe('team');
+  });
+
+  it('marks only the counters outside the build with a role', () => {
+    const lane = { item: ITEMS_DB.extra_charge, reasons: ['[LANE] Sustain vs Abrams'], urgency: 'Critique (En Face / Lane)' as const };
+    const inBuild = { item: ITEMS_DB.extra_spirit, reasons: ['[LANE] Sustain vs Abrams'], urgency: 'Critique (En Face / Lane)' as const };
+    const order = buildPurchaseOrder(BUILD, [lane, inBuild], ITEMS_DB, t);
+    expect(order.find((e) => e.item.id === 'extra_charge')?.role).toBeUndefined(); // in the build: keeps its place
+    const outside = buildPurchaseOrder(build_without('extra_charge'), [lane], ITEMS_DB, t);
+    expect(outside.find((e) => e.item.id === 'extra_charge')?.role).toBe('lane');
+  });
+
+  it('estimates the clock from the souls spent, and the lane due time from the first two items', () => {
+    expect(estimateClockS(0)).toBe(0);
+    expect(estimateClockS(6400)).toBe(600);
+    expect(estimateClockS(7200)).toBe(660); // halfway from 10 to 12 min
+    expect(estimateClockS(99999)).toBe(2400);
+    expect(laneCounterDueS(['improved_spirit', 'extra_spirit', 'extended_magazine'], (id) => times[id])).toBe(215);
+    expect(laneCounterDueS([], () => undefined)).toBe(241);
+  });
+});
+
+describe('answered threats', () => {
+  const alert = (counterIds: string[]) => ({ counters: counterIds.map((id) => ({ item: ITEMS_DB[id] })) });
+  const rec = (id: string) => ({ item: ITEMS_DB[id], reasons: ['[LANE] x'], urgency: 'Critique (En Face / Lane)' as const });
+
+  it('drops a counter whose enemies each have a counter in the build or owned', () => {
+    const alerts = [alert(['metal_skin', 'healbane']), alert(['metal_skin', 'toxic_bullets'])];
+    expect(dropAnsweredCounters([rec('metal_skin')], alerts, new Set(['healbane', 'toxic_bullets'])).length).toBe(0);
+  });
+
+  it('keeps a counter while one of its enemies is not answered yet', () => {
+    const alerts = [alert(['metal_skin', 'healbane']), alert(['metal_skin', 'toxic_bullets'])];
+    expect(dropAnsweredCounters([rec('metal_skin')], alerts, new Set(['healbane'])).map((r) => r.item.id)).toEqual(['metal_skin']);
+  });
+
+  it('keeps an item that is itself in the build, and a counter no enemy lists', () => {
+    const alerts = [alert(['healbane'])];
+    expect(dropAnsweredCounters([rec('healbane')], alerts, new Set(['healbane'])).length).toBe(1);
+    expect(dropAnsweredCounters([rec('monster_rounds')], alerts, new Set(['healbane'])).length).toBe(1);
   });
 });
 

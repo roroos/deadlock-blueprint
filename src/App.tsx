@@ -43,16 +43,13 @@ import { getDataInfo } from './data/dataSource';
 import { analyzeDeadlockScreen, VisionDetectionResult } from './services/visionScanner';
 import { LANE_BY_PAIR, MatchSnapshot, MatchTracker, MatchUpdate, TeamBoard, clockAt } from './services/matchTracker';
 import { MidBossState, NowAdvice, getNowAdvice, midBossBackAt } from './services/nowAdvice';
+import { computeBuyQueue } from './services/buyQueue';
 import {
   INVENTORY_SLOTS,
   InventoryStatus,
   QueueEntry,
-  buildPurchaseOrder,
   effectiveOwnedSet,
-  getPurchaseCounters,
-  hasLaneThreat,
   isLaneOver,
-  getNextPurchases,
   getSellCandidates,
   getSlotPlans,
   isInventoryFull,
@@ -67,7 +64,6 @@ import {
   investedSouls,
   investmentProgress,
   isSpikeWorthIt,
-  nudgeTowardKeySpike,
   sellKeepsSpikes,
   spikeOrder,
   spikeTopUp,
@@ -518,25 +514,6 @@ export function App() {
     if (laneOver && !laneOverLatched) setLaneOverLatched(true);
   }, [laneOver, laneOverLatched]);
 
-  // Lane-only counters need a real lane threat, and a Tier 1-2 one leaves with laning (services/recommendations.ts)
-  const counterContext = useMemo(
-    () => ({
-      laneThreat: hasLaneThreat(tacticalPlan.matchupAlerts, tacticalPlan.laneStrategy.outlook?.outlook),
-      laneOver,
-    }),
-    [tacticalPlan.matchupAlerts, tacticalPlan.laneStrategy.outlook, laneOver]
-  );
-
-  const purchaseOrder = useMemo(
-    () => buildPurchaseOrder(activeBuild, tacticalPlan.priorityItems, ITEMS, t, counterContext),
-    [activeBuild, tacticalPlan.priorityItems, ITEMS, t, counterContext]
-  );
-
-  const purchaseCounters = useMemo(
-    () => getPurchaseCounters(tacticalPlan.priorityItems, counterContext),
-    [tacticalPlan.priorityItems, counterContext]
-  );
-
   const isFull = isInventoryFull(inventoryStatus);
 
   const sellCandidates = useMemo(
@@ -577,17 +554,44 @@ export function App() {
     [investedItems]
   );
 
-  const rawNextToBuyQueue = useMemo(() => {
-    const buyTimeS = (itemId: string) => getHeroItemStat(myHeroId, itemId)?.buyTimeS;
-    const queue = getNextPurchases(purchaseOrder, ownedItems, inventoryStatus, sellCandidates, buyTimeS);
-    // The item each card will say to sell (inventory full) leaves before the spike is counted
-    const soldItem = (q: QueueEntry[], itemId: string) => {
-      const plan = getSlotPlans(q.slice(0, 6), ownedItems, inventoryStatus, sellCandidates, canSell).get(itemId);
-      return plan?.kind === 'sell' ? plan.itemId : undefined;
-    };
-    const isKeyCore = (itemId: string) => (getHeroItemStat(myHeroId, itemId)?.pickRate ?? 0) >= KEY_CORE_PICK_RATE;
-    return nudgeTowardKeySpike(queue, investedItems, investment, (itemId) => buyTimeS(itemId) || undefined, soldItem, isKeyCore);
-  }, [purchaseOrder, ownedItems, inventoryStatus, sellCandidates, myHeroId, investedItems, investment, canSell]);
+  // The queue (services/buyQueue.ts): key core items first, counters placed by the time they are due, the build in
+  // its usual buy order, the 4,800 spike nudge. Lane-only counters need a real lane threat and leave with laning
+  const { queue: rawNextToBuyQueue, counters: purchaseCounters } = useMemo(
+    () =>
+      computeBuyQueue({
+        build: activeBuild,
+        priorityItems: tacticalPlan.priorityItems,
+        matchupAlerts: tacticalPlan.matchupAlerts,
+        laneOutlook: tacticalPlan.laneStrategy.outlook?.outlook,
+        items: ITEMS,
+        t,
+        ownedItems,
+        investedItems,
+        inventoryStatus,
+        sellCandidates,
+        investment,
+        stat: (itemId) => getHeroItemStat(myHeroId, itemId),
+        clockS: clockMinute === undefined ? undefined : clockMinute * 60,
+        laneOver,
+        keyCorePickRate: KEY_CORE_PICK_RATE,
+      }),
+    [
+      activeBuild,
+      tacticalPlan.priorityItems,
+      tacticalPlan.matchupAlerts,
+      tacticalPlan.laneStrategy.outlook,
+      ITEMS,
+      t,
+      ownedItems,
+      investedItems,
+      inventoryStatus,
+      sellCandidates,
+      investment,
+      myHeroId,
+      clockMinute,
+      laneOver,
+    ]
+  );
 
   // The #1 stays locked until it is bought or skipped (or the hero/build changes):
   // new counters or a re-ordering of the queue only affect #2 and beyond.

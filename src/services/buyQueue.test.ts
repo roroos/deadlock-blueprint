@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { HEROES_DB, ITEMS_DB, generateTacticalPlan, getHeroItemStat } from '../data/deadlockData';
 import { makeTranslate } from '../i18n';
-import { BuyQueue, computeBuyQueue } from './buyQueue';
+import { BuyQueue, computeBuyQueue, estimateClockS, isLaneOver } from './buyQueue';
 import {
   KEY_CORE_PICK_RATE,
   KEY_SPIKE,
@@ -12,7 +12,7 @@ import {
   sellKeepsSpikes,
   spikeOrder,
 } from './investments';
-import { estimateClockS, getComponentIds, getSellCandidates, getSlotPlans, isLaneOver } from './recommendations';
+import { getComponentIds, getSellCandidates, getSlotPlans } from './recommendations';
 
 const t = makeTranslate('en');
 

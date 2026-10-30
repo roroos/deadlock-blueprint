@@ -4,7 +4,7 @@
  * last. Pure functions of the build order and the owned items (tested in investments.test.ts).
  */
 import { ITEMS_DB, ItemCategory } from '../data/deadlockData';
-import { getComponentIds, QueueEntry } from './recommendations';
+import { getComponentIds } from './recommendations';
 
 /** The key spike: the largest bonus jump of every category. */
 export const KEY_SPIKE = 4800;
@@ -46,9 +46,6 @@ const COMMIT_LEAD = 1600;
  * a spike item never moves above one, and a counter never takes its place.
  */
 export const KEY_CORE_PICK_RATE = 0.7;
-
-/** A spike item may move to #1 only when players usually buy it this close to the current #1 (seconds). */
-const NUDGE_WINDOW_S = 120;
 
 const CATEGORIES: ItemCategory[] = ['weapon', 'spirit', 'vitality'];
 
@@ -218,35 +215,4 @@ export function spikeBadge(
   const isTopUp = gain.added <= CHEAP_TOP_UP;
   if (progress.push === 'top-up' && !isTopUp) return null;
   return { category: gain.category, topUp: isTopUp && gain.before >= NEAR_MISS_FROM ? gain.added : null };
-}
-
-/**
- * Gentle nudge: when the #1 has no spike badge but #2 or #3 has (spikeBadge) and players usually buy it
- * at about the same time, that item becomes #1. The rest of the queue keeps its order. Never when the target
- * comes from the inventory: the queue follows the build, and the player who left it does not need it reordered.
- * `soldItem` gives the item sold to make room for an item in a queue (inventory full), as the cards will show
- * it: the sales follow the queue order, so it is asked of the queue with the spike item moved to #1.
- * `isKeyCore` marks the items a spike item never moves above.
- */
-export function nudgeTowardKeySpike(
-  queue: QueueEntry[],
-  ownedItems: string[],
-  progress: InvestmentProgress,
-  buyTimeS: (itemId: string) => number | undefined,
-  soldItem: (queue: QueueEntry[], itemId: string) => string | undefined = () => undefined,
-  isKeyCore: (itemId: string) => boolean = () => false
-): QueueEntry[] {
-  const hasBadge = (q: QueueEntry[]) => spikeBadge(q[0].item.id, ownedItems, progress, soldItem(q, q[0].item.id)) !== null;
-  if (progress.fromInventory || queue.length < 2 || hasBadge(queue)) return queue;
-  const firstTime = buyTimeS(queue[0].item.id);
-  if (firstTime === undefined) return queue;
-  for (const [index, spike] of queue.slice(1, 3).entries()) {
-    // Never above a key core item: the spike item waits behind it
-    if (queue.slice(0, index + 1).some((entry) => isKeyCore(entry.item.id))) break;
-    const time = buyTimeS(spike.item.id);
-    if (time === undefined || time - firstTime > NUDGE_WINDOW_S) continue;
-    const nudged = [spike, ...queue.filter((entry) => entry !== spike)];
-    if (hasBadge(nudged)) return nudged;
-  }
-  return queue;
 }

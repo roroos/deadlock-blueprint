@@ -7,7 +7,6 @@ import {
   counterRole,
   dropAnsweredCounters,
   effectiveOwnedSet,
-  estimateClockS,
   getComponentIds,
   getNextPurchases,
   getPurchaseCounters,
@@ -15,11 +14,9 @@ import {
   getSlotPlans,
   hasLaneThreat,
   isInventoryFull,
-  isLaneOver,
-  laneCounterDueS,
-  placeCounters,
   withLockedFirst,
 } from './recommendations';
+import { estimateClockS, isLaneOver, laneCounterDueS, placeCounters } from './buyQueue';
 import { sellKeepsSpikes } from './investments';
 
 const t = makeTranslate('en');

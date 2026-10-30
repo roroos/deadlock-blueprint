@@ -7,10 +7,10 @@ import {
   investmentItems,
   investmentProgress,
   keySpikeReached,
-  nudgeTowardKeySpike,
   spikeOrder,
   spikeBadge,
 } from './investments';
+import { nudgeTowardKeySpike } from './buyQueue';
 import { QueueEntry } from './recommendations';
 
 const entry = (id: string): QueueEntry => ({ item: ITEMS_DB[id], reason: '' });

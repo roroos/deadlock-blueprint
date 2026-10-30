@@ -43,13 +43,12 @@ import { getDataInfo } from './data/dataSource';
 import { analyzeDeadlockScreen, VisionDetectionResult } from './services/visionScanner';
 import { LANE_BY_PAIR, MatchSnapshot, MatchTracker, MatchUpdate, TeamBoard, clockAt } from './services/matchTracker';
 import { MidBossState, NowAdvice, getNowAdvice, midBossBackAt } from './services/nowAdvice';
-import { computeBuyQueue } from './services/buyQueue';
+import { computeBuyQueue, isLaneOver } from './services/buyQueue';
 import {
   INVENTORY_SLOTS,
   InventoryStatus,
   QueueEntry,
   effectiveOwnedSet,
-  isLaneOver,
   getSellCandidates,
   getSlotPlans,
   isInventoryFull,

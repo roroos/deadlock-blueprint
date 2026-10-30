@@ -102,7 +102,7 @@ clustered by match; win-rate points with 95% intervals; correlations, skill is n
   spend the richest category at 4,800 beats 4,000 by +0.8 to +1.1 at 9-12 min, and 5,600 or 6,400 are no better.
 - Each later spike is worth +0.7 to +1 while it is early (the second at 15 min +0.9, the third at 20 min +0.7), +0.3
   at 25 min and 0 at 30. Earlier is better, about 0.3 point per minute for the first spike.
-- That is why the app pushes a spike only inside a window (`SPIKE_PUSH_UNTIL_MIN`): the first until 14 min, the second
+- That is why the app pushes a spike only inside a window (`SPIKES` in `investments.ts`): the first until 14 min, the second
   until 20, the third until 24 (any item before 22 min, only a top-up after). No reordering, badge or "late"
   colour after that.
 - 38% of players sit at 4,000-4,799 before their first spike (median wait 1.9 min at rank 81+, 2.6 at 1-40), and 46%

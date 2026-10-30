@@ -541,7 +541,7 @@ export function App() {
     () => investmentItems(ownedItems, readManualOwned(), inventoryStatus?.itemIds ?? null),
     [ownedItems, inventoryStatus]
   );
-  // The clock by the minute: the push windows of a spike (SPIKE_PUSH_UNTIL_MIN) do not need the second
+  // The clock by the minute: the push windows of a spike (SPIKES) do not need the second
   const clockMinute = clockS === undefined ? undefined : Math.floor(clockS / 60);
   const investment = useMemo(
     () => investmentProgress(buildSpikeOrder, investedItems, clockMinute === undefined ? undefined : clockMinute * 60),
@@ -1157,7 +1157,7 @@ export function App() {
         </p>
       );
     }
-    // Past its window (SPIKE_PUSH_UNTIL_MIN) a spike is not pushed any more, and its pace is no longer a warning;
+    // Past its window (SPIKES) a spike is not pushed any more, and its pace is no longer a warning;
     // the third one is only worth a cheap top-up when the clock is unknown or late
     const range = `${Math.round(pace.highRank)}–${Math.round(pace.lowRank)}`;
     const late = String(Math.round(pace.lowRank));

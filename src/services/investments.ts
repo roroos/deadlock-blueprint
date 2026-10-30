@@ -9,19 +9,26 @@ import { getComponentIds, QueueEntry } from './recommendations';
 /** The key spike: the largest bonus jump of every category. */
 export const KEY_SPIKE = 4800;
 
-/**
- * Median minute players (normal games) have one, two and three categories at 4,800: rank 81+ and rank 1-40.
- * Measured on 40,000 players per group over 1.5 days of deadlock-api.com data (docs/INVESTMENTS.md).
- * Shown as a range: comparing every player to rank 81+ alone flagged half of them "behind", even at high rank.
- */
-export const HIGH_RANK_SPIKE_MINUTES = [10.2, 15.3, 19.9];
-export const LOW_RANK_SPIKE_MINUTES = [11.6, 17.4, 23.2];
+/** How hard a spike is pushed: any item, a cheap top-up only, or not at all (see SPIKES). */
+export type SpikePush = 'full' | 'top-up' | 'off';
 
 /**
- * The first two 4,800s are the ones worth bending the order for. After them, the third only when it is a small
- * top-up: an item that adds at most this many souls to the category.
+ * The three spikes, first to last.
+ * - `pace`: the median minute players have it, rank 81+ and rank 1-40 (40,000 players per group, 1.5 days of
+ *   deadlock-api.com data). Shown as a range: comparing everyone to rank 81+ alone flagged half of them "behind".
+ * - `fullUntilMin` / `pushUntilMin`: any item is pushed until the first minute, a cheap top-up until the second, then
+ *   nothing (no reordering, badge or "late" colour). On 534,000 ranked players (Oct 2026), at equal spend and team
+ *   lead, the first 4,800 is worth about +1 point of win rate at 9-12 min and 0 at 15 min; each later one +0.7 to +1
+ *   while early and 0 by 30 min.
+ * - `withoutClock`: how hard it is pushed when no clock is read.
  */
-export const CORE_SPIKES = 2;
+export const SPIKES = [
+  { pace: { highRank: 10.2, lowRank: 11.6 }, fullUntilMin: 14, pushUntilMin: 14, withoutClock: 'full' },
+  { pace: { highRank: 15.3, lowRank: 17.4 }, fullUntilMin: 20, pushUntilMin: 20, withoutClock: 'full' },
+  { pace: { highRank: 19.9, lowRank: 23.2 }, fullUntilMin: 22, pushUntilMin: 24, withoutClock: 'top-up' },
+] as const;
+
+/** A top-up: an item that adds at most this many souls to the category. */
 export const CHEAP_TOP_UP = 800;
 
 /**
@@ -45,20 +52,8 @@ const NUDGE_WINDOW_S = 120;
 
 const CATEGORIES: ItemCategory[] = ['weapon', 'spirit', 'vitality'];
 
-/**
- * How long a spike is worth bending the order or warning about. Measured on 534,000 ranked players (deadlock-api.com,
- * Oct 2026), compared at equal spend and team lead: the first 4,800 is worth about +1 point of win rate at 9-12 min
- * and 0 at 15 min, each later one +0.7 to +1 while early and 0 by 30 min. After these minutes (spike 1, 2 and 3) the
- * spike gets no reordering, no badge and no "late" colour.
- */
-export const SPIKE_PUSH_UNTIL_MIN = [14, 20, 24];
-/** The third spike is pushed like the others before this minute, and only as a cheap top-up until its end. */
-export const THIRD_FULL_UNTIL_MIN = 22;
-/** A top-up badge: the category sits at this many souls or more, and the item adds at most CHEAP_TOP_UP. */
+/** A "last souls" badge: the category already holds this many souls, and the item adds at most CHEAP_TOP_UP. */
 const NEAR_MISS_FROM = 4000;
-
-/** How hard the target spike is pushed: any item, a cheap top-up only, or not at all. */
-export type SpikePush = 'full' | 'top-up' | 'off';
 
 export interface CategoryInvestment {
   category: ItemCategory;
@@ -72,7 +67,7 @@ export interface InvestmentProgress {
   fromInventory: boolean; // the target is the category the player committed to, not the build's next one
   spikeNumber: number; // 1-3: which spike the target is (categories already at 4,800 + 1)
   pace: { highRank: number; lowRank: number } | null; // median minute players have that many spikes
-  push: SpikePush; // how hard the target is pushed at this point of the game (SPIKE_PUSH_UNTIL_MIN)
+  push: SpikePush; // how hard the target is pushed at this point of the game (SPIKES)
 }
 
 /**
@@ -132,37 +127,37 @@ export function spikeOrder(buildItemIds: string[]): ItemCategory[] {
   return [...order, ...rest];
 }
 
-/** Without a clock the first two spikes are pushed and the third only as a cheap top-up, as before the windows. */
-function spikePush(doneCount: number, hasTarget: boolean, clockS: number | undefined): SpikePush {
-  if (!hasTarget) return 'off';
-  if (doneCount >= CORE_SPIKES) {
-    if (clockS === undefined) return 'top-up';
-    if (clockS < THIRD_FULL_UNTIL_MIN * 60) return 'full';
-    return clockS < SPIKE_PUSH_UNTIL_MIN[2] * 60 ? 'top-up' : 'off';
-  }
-  return clockS !== undefined && clockS >= SPIKE_PUSH_UNTIL_MIN[doneCount] * 60 ? 'off' : 'full';
+/** How hard the spike at this index (0 = first) is pushed at this point of the game. */
+function spikePush(spikeIndex: number, clockS?: number): SpikePush {
+  const spike = SPIKES[spikeIndex];
+  if (!spike) return 'off'; // all three are done
+  if (clockS === undefined) return spike.withoutClock;
+  if (clockS < spike.fullUntilMin * 60) return 'full';
+  if (clockS < spike.pushUntilMin * 60) return 'top-up';
+  return 'off';
 }
 
 export function investmentProgress(order: ItemCategory[], ownedItems: string[], clockS?: number): InvestmentProgress {
   const souls = investedSouls(ownedItems);
-  const inOrder = order.map((category) => ({ category, souls: souls[category], done: souls[category] >= KEY_SPIKE }));
-  const doneCount = inOrder.filter((c) => c.done).length;
-  const buildTarget = inOrder.find((c) => !c.done) ?? null;
+  const all = order.map((category) => ({ category, souls: souls[category], done: souls[category] >= KEY_SPIKE }));
+  const done = all.filter((c) => c.done);
+  const open = all.filter((c) => !c.done);
+  const buildTarget = open[0] ?? null;
   // A category the player clearly committed to replaces the build's next one (COMMIT_MIN_SOULS, COMMIT_LEAD)
   const committed = buildTarget
-    ? inOrder
-        .filter((c) => !c.done && c.souls >= COMMIT_MIN_SOULS && c.souls - buildTarget.souls >= COMMIT_LEAD)
+    ? open
+        .filter((c) => c.souls >= COMMIT_MIN_SOULS && c.souls - buildTarget.souls >= COMMIT_LEAD)
         .sort((a, b) => b.souls - a.souls)[0]
     : undefined;
   const target = committed ?? buildTarget;
-  const categories = [...inOrder.filter((c) => c.done), ...(target ? [target] : []), ...inOrder.filter((c) => !c.done && c !== target)];
+  const spikeIndex = done.length;
   return {
-    categories,
+    categories: [...done, ...(target ? [target] : []), ...open.filter((c) => c !== target)],
     target,
     fromInventory: target !== buildTarget,
-    spikeNumber: doneCount + 1,
-    pace: target ? { highRank: HIGH_RANK_SPIKE_MINUTES[doneCount], lowRank: LOW_RANK_SPIKE_MINUTES[doneCount] } : null,
-    push: spikePush(doneCount, target !== null, clockS),
+    spikeNumber: spikeIndex + 1,
+    pace: target ? SPIKES[spikeIndex].pace : null,
+    push: target ? spikePush(spikeIndex, clockS) : 'off',
   };
 }
 

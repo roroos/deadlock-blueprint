@@ -5,7 +5,7 @@ import { BuyQueue, computeBuyQueue } from './buyQueue';
 import {
   KEY_CORE_PICK_RATE,
   KEY_SPIKE,
-  SPIKE_PUSH_UNTIL_MIN,
+  SPIKES,
   inBuyOrder,
   investedSouls,
   investmentProgress,
@@ -104,7 +104,7 @@ function simulate(lineupsPerHero: number): Tally {
           queue.forEach((entry, index) => {
             if (!entry.role) return;
             if (entry.role === 'lane' && laneOver) tally.laneCounterAfterLaning++;
-            if (entry.role === 'team' && !firstSpikeDone && nowS < SPIKE_PUSH_UNTIL_MIN[0] * 60) tally.teamCounterBeforeFirstSpike++;
+            if (entry.role === 'team' && !firstSpikeDone && nowS < SPIKES[0].pushUntilMin * 60) tally.teamCounterBeforeFirstSpike++;
             // A key core item that is due stays ahead of every counter
             const dueBehind = queue.some(
               (other, j) => j > index && !other.role && isKeyCore(other.item.id) && (buyTimeS(other.item.id) ?? Infinity) <= nowS

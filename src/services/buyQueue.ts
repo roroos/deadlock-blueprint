@@ -12,7 +12,7 @@
 import type { DeadlockItem, HeroBuildArchetype, TacticalRecommendation } from '../data/deadlockData';
 import type { LaneOutlook } from '../data/matchupStats';
 import type { Translate } from '../i18n';
-import { SPIKE_PUSH_UNTIL_MIN, InvestmentProgress, investedSouls, nudgeTowardKeySpike, sellKeepsSpikes } from './investments';
+import { SPIKES, InvestmentProgress, investedSouls, nudgeTowardKeySpike, sellKeepsSpikes } from './investments';
 import {
   InventoryStatus,
   QueueEntry,
@@ -83,7 +83,7 @@ export function computeBuyQueue(input: BuyQueueInput): BuyQueue {
     buyTimeS,
     isKeyCore,
     laneDueS: laneCounterDueS(buildItemIds, buyTimeS),
-    teamReleased: firstSpikeDone || nowS >= SPIKE_PUSH_UNTIL_MIN[0] * 60,
+    teamReleased: firstSpikeDone || nowS >= SPIKES[0].pushUntilMin * 60,
   });
 
   // The item each card will say to sell (inventory full) leaves before the spike is counted, and never one that

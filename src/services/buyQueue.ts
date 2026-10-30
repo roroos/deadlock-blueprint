@@ -12,7 +12,7 @@
 import type { DeadlockItem, HeroBuildArchetype, TacticalRecommendation } from '../data/deadlockData';
 import type { LaneOutlook } from '../data/matchupStats';
 import type { Translate } from '../i18n';
-import { SPIKES, InvestmentProgress, investedSouls, sellKeepsSpikes, spikeBadge } from './investments';
+import { KEY_CORE_PICK_RATE, SPIKES, InvestmentProgress, sellKeepsSpikes, spikeBadge, totalInvested } from './investments';
 import {
   CounterRole,
   InventoryStatus,
@@ -26,18 +26,22 @@ import {
   hasLaneThreat,
 } from './recommendations';
 
-export interface BuyQueueInput {
+/** What the player has, and what could be sold if the inventory is full. */
+export interface InventoryView {
+  /** Owned items, and the ones the 4,800 spikes count (investmentItems) */
+  ownedItems: string[];
+  investedItems: string[];
+  inventoryStatus: InventoryStatus | null;
+  sellCandidates: string[];
+}
+
+export interface BuyQueueInput extends InventoryView {
   build: HeroBuildArchetype;
   priorityItems: TacticalRecommendation['priorityItems'];
   matchupAlerts: TacticalRecommendation['matchupAlerts'];
   laneOutlook?: LaneOutlook;
   items: Record<string, DeadlockItem>;
   t: Translate;
-  /** Owned items, and the ones the 4,800 spikes count (investmentItems) */
-  ownedItems: string[];
-  investedItems: string[];
-  inventoryStatus: InventoryStatus | null;
-  sellCandidates: string[];
   investment: InvestmentProgress;
   /** The hero's statistics of an item: pick rate and usual buy time (getHeroItemStat) */
   stat: (itemId: string) => { pickRate: number; buyTimeS: number } | undefined;
@@ -45,8 +49,6 @@ export interface BuyQueueInput {
   clockS?: number;
   /** Laning is over (isLaneOver, latched for the match) */
   laneOver: boolean;
-  /** A pick rate from which an item is a key core item */
-  keyCorePickRate: number;
 }
 
 export interface BuyQueue {
@@ -59,7 +61,7 @@ export interface BuyQueue {
 export function computeBuyQueue(input: BuyQueueInput): BuyQueue {
   const { build, ownedItems, investedItems, inventoryStatus, sellCandidates, investment, stat } = input;
   const buyTimeS = (itemId: string) => stat(itemId)?.buyTimeS || undefined;
-  const isKeyCore = (itemId: string) => (stat(itemId)?.pickRate ?? 0) >= input.keyCorePickRate;
+  const isKeyCore = (itemId: string) => (stat(itemId)?.pickRate ?? 0) >= KEY_CORE_PICK_RATE;
   const buildItemIds = [...build.phases.early, ...build.phases.mid, ...build.phases.late];
 
   // Counters: not against an enemy that an owned or build item already answers, and lane ones only for a lane threat
@@ -72,8 +74,7 @@ export function computeBuyQueue(input: BuyQueueInput): BuyQueue {
   const counters = getPurchaseCounters(priorityItems, counterContext);
   const order = buildPurchaseOrder(build, priorityItems, input.items, input.t, counterContext);
 
-  const soulsSpent = Object.values(investedSouls(ownedItems)).reduce((sum, souls) => sum + souls, 0);
-  const nowS = input.clockS ?? estimateClockS(soulsSpent);
+  const nowS = input.clockS ?? estimateClockS(totalInvested(ownedItems));
   const firstSpikeDone = investment.categories.some((c) => c.done);
   const remaining = getNextPurchases(order, ownedItems, inventoryStatus, sellCandidates, (id) => stat(id)?.buyTimeS);
   const placed = placeCounters(remaining, {
@@ -84,17 +85,26 @@ export function computeBuyQueue(input: BuyQueueInput): BuyQueue {
     teamReleased: firstSpikeDone || nowS >= SPIKES[0].pushUntilMin * 60,
   });
 
-  // The item each card will say to sell (inventory full) leaves before the spike is counted, and never one that
-  // would drop a finished 4,800 spike
-  const canSell = (soldId: string, itemId: string) => sellKeepsSpikes(investedItems, soldId, itemId);
-  const soldItem = (q: QueueEntry[], itemId: string) => {
-    const plan = getSlotPlans(q.slice(0, 6), ownedItems, inventoryStatus, sellCandidates, canSell).get(itemId);
+  // The item each card will say to sell (inventory full) leaves before the spike is counted
+  const soldFor = (queue: QueueEntry[], itemId: string) => {
+    const plan = getSpikeSafeSlotPlans(queue.slice(0, 6), input).get(itemId);
     return plan?.kind === 'sell' ? plan.itemId : undefined;
   };
   return {
-    queue: nudgeTowardKeySpike(placed, investedItems, investment, buyTimeS, soldItem, isKeyCore),
+    queue: nudgeTowardKeySpike(placed, investedItems, investment, { buyTimeS, isKeyCore, soldFor }),
     counters,
   };
+}
+
+/**
+ * What each shown card does to the inventory (getSlotPlans), never selling an item whose sale would drop a finished
+ * 4,800 spike. One function for the cards and for the nudge, so they can never disagree about what is sold.
+ */
+export function getSpikeSafeSlotPlans(shown: QueueEntry[], inventory: InventoryView) {
+  const { ownedItems, investedItems, inventoryStatus, sellCandidates } = inventory;
+  return getSlotPlans(shown, ownedItems, inventoryStatus, sellCandidates, (soldId, itemId) =>
+    sellKeepsSpikes(investedItems, soldId, itemId)
+  );
 }
 
 // ---- The steps of the pipeline above ----
@@ -198,23 +208,27 @@ export function placeCounters(queue: QueueEntry[], ctx: DueContext): QueueEntry[
 /** A spike item may move to #1 only when players usually buy it this close to the current #1 (seconds). */
 const NUDGE_WINDOW_S = 120;
 
+export interface NudgeOptions {
+  /** The usual buy time of an item, if known */
+  buyTimeS: (itemId: string) => number | undefined;
+  /** The items a spike item never moves above (default: none) */
+  isKeyCore?: (itemId: string) => boolean;
+  /** The item sold to make room for the #1 of a queue (inventory full), as the cards will show it */
+  soldFor?: (queue: QueueEntry[], itemId: string) => string | undefined;
+}
+
 /**
  * Gentle nudge: when the #1 has no spike badge but #2 or #3 has (spikeBadge) and players usually buy it
  * at about the same time, that item becomes #1. The rest of the queue keeps its order. Never when the target
  * comes from the inventory: the queue follows the build, and the player who left it does not need it reordered.
- * `soldItem` gives the item sold to make room for an item in a queue (inventory full), as the cards will show
- * it: the sales follow the queue order, so it is asked of the queue with the spike item moved to #1.
- * `isKeyCore` marks the items a spike item never moves above.
  */
 export function nudgeTowardKeySpike(
   queue: QueueEntry[],
   ownedItems: string[],
   progress: InvestmentProgress,
-  buyTimeS: (itemId: string) => number | undefined,
-  soldItem: (queue: QueueEntry[], itemId: string) => string | undefined = () => undefined,
-  isKeyCore: (itemId: string) => boolean = () => false
+  { buyTimeS, isKeyCore = () => false, soldFor = () => undefined }: NudgeOptions
 ): QueueEntry[] {
-  const hasBadge = (q: QueueEntry[]) => spikeBadge(q[0].item.id, ownedItems, progress, soldItem(q, q[0].item.id)) !== null;
+  const hasBadge = (q: QueueEntry[]) => spikeBadge(q[0].item.id, ownedItems, progress, soldFor(q, q[0].item.id)) !== null;
   if (progress.fromInventory || queue.length < 2 || hasBadge(queue)) return queue;
   const firstTime = buyTimeS(queue[0].item.id);
   if (firstTime === undefined) return queue;

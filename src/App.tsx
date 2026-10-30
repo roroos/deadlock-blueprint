@@ -43,27 +43,24 @@ import { getDataInfo } from './data/dataSource';
 import { analyzeDeadlockScreen, VisionDetectionResult } from './services/visionScanner';
 import { LANE_BY_PAIR, MatchSnapshot, MatchTracker, MatchUpdate, TeamBoard, clockAt } from './services/matchTracker';
 import { MidBossState, NowAdvice, getNowAdvice, midBossBackAt } from './services/nowAdvice';
-import { computeBuyQueue, isLaneOver } from './services/buyQueue';
+import { computeBuyQueue, getSpikeSafeSlotPlans, isLaneOver } from './services/buyQueue';
 import {
   INVENTORY_SLOTS,
   InventoryStatus,
   QueueEntry,
   effectiveOwnedSet,
   getSellCandidates,
-  getSlotPlans,
   isInventoryFull,
   withLockedFirst,
 } from './services/recommendations';
 import {
   CHEAP_TOP_UP,
-  KEY_CORE_PICK_RATE,
   KEY_SPIKE,
   inBuyOrder,
   investmentItems,
-  investedSouls,
   investmentProgress,
-  sellKeepsSpikes,
   spikeOrder,
+  totalInvested,
   spikeBadge,
 } from './services/investments';
 import {
@@ -502,10 +499,7 @@ export function App() {
 
   // Laning ends at 10 min (the clock, else about 6,400 souls spent). Latched for the match: the clock is forgotten 15 s
   // after the top bar was last seen, and a lane counter must not come back with it
-  const soulsSpent = useMemo(
-    () => Object.values(investedSouls(ownedItems)).reduce((sum, souls) => sum + souls, 0),
-    [ownedItems]
-  );
+  const soulsSpent = useMemo(() => totalInvested(ownedItems), [ownedItems]);
   const [laneOverLatched, setLaneOverLatched] = useState(false);
   const laneOver = laneOverLatched || isLaneOver(clockS, soulsSpent);
   useEffect(() => {
@@ -546,11 +540,6 @@ export function App() {
     () => investmentProgress(buildSpikeOrder, investedItems, clockMinute === undefined ? undefined : clockMinute * 60),
     [buildSpikeOrder, investedItems, clockMinute]
   );
-  // A sale that would drop a finished 4,800 spike is never suggested: the next weakest item is
-  const canSell = useCallback(
-    (soldId: string, itemId: string) => sellKeepsSpikes(investedItems, soldId, itemId),
-    [investedItems]
-  );
 
   // The queue (services/buyQueue.ts): key core items first, counters placed by the time they are due, the build in
   // its usual buy order, the 4,800 spike nudge. Lane-only counters need a real lane threat and leave with laning
@@ -571,7 +560,6 @@ export function App() {
         stat: (itemId) => getHeroItemStat(myHeroId, itemId),
         clockS: clockMinute === undefined ? undefined : clockMinute * 60,
         laneOver,
-        keyCorePickRate: KEY_CORE_PICK_RATE,
       }),
     [
       activeBuild,
@@ -616,8 +604,8 @@ export function App() {
   // What each displayed recommendation does to the inventory: an upgrade replaces its component; with a full
   // inventory, the other ones each need an owned item sold first (the weakest for #1, the next one for #2...)
   const slotPlans = useMemo(
-    () => getSlotPlans(nextToBuyQueue.slice(0, 6), ownedItems, inventoryStatus, sellCandidates, canSell),
-    [nextToBuyQueue, ownedItems, inventoryStatus, sellCandidates, canSell]
+    () => getSpikeSafeSlotPlans(nextToBuyQueue.slice(0, 6), { ownedItems, investedItems, inventoryStatus, sellCandidates }),
+    [nextToBuyQueue, ownedItems, investedItems, inventoryStatus, sellCandidates]
   );
 
   // When the Mid Boss is back after a kill marked by hand

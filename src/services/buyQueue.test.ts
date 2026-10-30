@@ -95,7 +95,6 @@ function simulate(lineupsPerHero: number): Tally {
             investment,
             stat,
             laneOver,
-            keyCorePickRate: KEY_CORE_PICK_RATE,
           });
           if (queue.length === 0) break;
 

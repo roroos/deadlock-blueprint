@@ -163,6 +163,16 @@ export function investmentProgress(order: ItemCategory[], ownedItems: string[], 
   };
 }
 
+/** What the pace line says: the spike is past its window, only a top-up is worth it, the player is behind, or on pace. */
+export type PaceStatus = 'past' | 'topUp' | 'behind' | 'onPace';
+
+/** Behind means past the slower median minute (rank 1-40) while the spike is still pushed. */
+export function paceStatus({ push, pace }: InvestmentProgress, clockS?: number): PaceStatus {
+  if (push === 'off') return 'past';
+  if (push === 'top-up') return 'topUp';
+  return pace && clockS !== undefined && clockS > pace.lowRank * 60 ? 'behind' : 'onPace';
+}
+
 /** The owned items after buying this one, selling `soldId` first (inventory full). */
 function afterPurchase(itemId: string, ownedItems: string[], soldId?: string): string[] {
   return [...ownedItems.filter((id) => id !== soldId), itemId];

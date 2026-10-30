@@ -6,6 +6,7 @@ import {
   investedSouls,
   investmentItems,
   investmentProgress,
+  paceStatus,
   keySpikeReached,
   spikeOrder,
   spikeBadge,
@@ -335,5 +336,28 @@ describe('spikeBadge top-up', () => {
 
   it('is null once the spike is past its window', () => {
     expect(spikeBadge('monster_rounds', owned, investmentProgress(order, owned, 15 * 60))?.topUp ?? null).toBeNull();
+  });
+});
+
+describe('paceStatus', () => {
+  const order = spikeOrder(BUILD);
+  const status = (owned: string[], clockMin?: number) =>
+    paceStatus(investmentProgress(order, owned, clockMin === undefined ? undefined : clockMin * 60), clockMin === undefined ? undefined : clockMin * 60);
+
+  it('is on pace until the slower median minute of the spike, then behind', () => {
+    expect(status([], 10)).toBe('onPace');
+    expect(status([], 11.6)).toBe('onPace');
+    expect(status([], 12)).toBe('behind'); // first spike: rank 1-40 median is 11.6 min
+  });
+
+  it('is onPace without a clock: nobody can be behind', () => {
+    expect(status([])).toBe('onPace');
+  });
+
+  it('is past once the spike is outside its push window, and top-up for a late third spike', () => {
+    expect(status([], 14)).toBe('past');
+    const twoSpikes = ['tesla_bullets', 'long_range', 'slowing_hex', 'mystic_slow', 'mystic_vulnerability'];
+    expect(status(twoSpikes, 23)).toBe('topUp');
+    expect(status(twoSpikes, 25)).toBe('past');
   });
 });

@@ -18,12 +18,10 @@ import {
   Terminal,
   Unlock,
   UserPlus,
-  TrendingUp,
   X,
   Zap,
 } from 'lucide-react';
 import {
-  ItemCategory,
   LaneColor,
   LaneMode,
   TacticalRecommendation,
@@ -54,8 +52,6 @@ import {
   withLockedFirst,
 } from './services/recommendations';
 import {
-  CHEAP_TOP_UP,
-  KEY_SPIKE,
   inBuyOrder,
   investmentItems,
   investmentProgress,
@@ -74,8 +70,9 @@ import {
 import { grabGameFrame, releaseGameFrame } from './services/screenCapture';
 import type { AppInfo, ElectronSourceInfo, UpdateStatus } from './electron';
 import { ItemCard } from './components/ItemCard';
+import { InvestmentLine, SpikeChip } from './components/InvestmentLine';
 import { HeroPortraitIcon, ItemArtworkIcon, PowerIcon } from './components/DeadlockIcons';
-import { CopyNameButton, SHOP_TABS, ShopTabMarker } from './components/ShopHelpers';
+import { CopyNameButton, ShopTabMarker } from './components/ShopHelpers';
 import { SettingsModal } from './components/SettingsModal';
 import { OnboardingModal } from './components/OnboardingModal';
 import { ReportContent, ReportDialog } from './components/ReportDialog';
@@ -174,13 +171,6 @@ const NOW_STYLE: Record<NowAdvice['kind'], { icon: string; className: string }> 
   help: { icon: '🤝', className: 'text-sky-300' },
   focus: { icon: '🎯', className: 'text-amber-300' },
   avoid: { icon: '🚫', className: 'text-red-300' },
-};
-
-// Investment bars in the shop tab colours
-const SPIKE_BAR: Record<ItemCategory, string> = {
-  weapon: 'bg-orange-400',
-  vitality: 'bg-emerald-400',
-  spirit: 'bg-purple-400',
 };
 
 // My hero is auto-detected once per match, then locked (persisted so a restart mid-match keeps it)
@@ -534,11 +524,11 @@ export function App() {
     () => investmentItems(ownedItems, readManualOwned(), inventoryStatus?.itemIds ?? null),
     [ownedItems, inventoryStatus]
   );
-  // The clock by the minute: the push windows of a spike (SPIKES) do not need the second
-  const clockMinute = clockS === undefined ? undefined : Math.floor(clockS / 60);
+  // The clock by the minute: the push windows of a spike (SPIKES) and the due times do not need the second
+  const clockMinuteS = clockS === undefined ? undefined : Math.floor(clockS / 60) * 60;
   const investment = useMemo(
-    () => investmentProgress(buildSpikeOrder, investedItems, clockMinute === undefined ? undefined : clockMinute * 60),
-    [buildSpikeOrder, investedItems, clockMinute]
+    () => investmentProgress(buildSpikeOrder, investedItems, clockMinuteS),
+    [buildSpikeOrder, investedItems, clockMinuteS]
   );
 
   // The queue (services/buyQueue.ts): key core items first, counters placed by the time they are due, the build in
@@ -558,7 +548,7 @@ export function App() {
         sellCandidates,
         investment,
         stat: (itemId) => getHeroItemStat(myHeroId, itemId),
-        clockS: clockMinute === undefined ? undefined : clockMinute * 60,
+        clockS: clockMinuteS,
         laneOver,
       }),
     [
@@ -574,7 +564,7 @@ export function App() {
       sellCandidates,
       investment,
       myHeroId,
-      clockMinute,
+      clockMinuteS,
       laneOver,
     ]
   );
@@ -1103,108 +1093,11 @@ export function App() {
     );
   };
 
-  /**
-   * The spike badge under an item (spikeBadge), after selling what its card says to sell: "Reaches the 4,800 Spirit
-   * spike", or "Last 800 souls to ..." when the category is already close. Neutral chip with the tab colour on the
-   * icon: amber is kept for "late".
-   */
+  /** The spike badge under an item, after selling what its card says to sell (inventory full). */
   const renderSpikeHint = (itemId: string, compact = false) => {
     const plan = slotPlans.get(itemId);
     const badge = spikeBadge(itemId, investedItems, investment, plan?.kind === 'sell' ? plan.itemId : undefined);
-    if (!badge) return null;
-    const category = t(`category.${badge.category}`);
-    return (
-      <div
-        className={`flex items-center gap-1.5 rounded-lg border font-bold bg-white/5 border-white/20 text-slate-100 ${
-          compact ? 'px-1.5 py-0.5' : 'px-2 py-1'
-        } text-small`}
-        title={t('invest.spikeTitle')}
-      >
-        <TrendingUp className={`w-3 h-3 shrink-0 ${SHOP_TABS[badge.category].className}`} aria-hidden />
-        <span>
-          {badge.topUp === null
-            ? t('invest.spike', category, formatNumber(KEY_SPIKE))
-            : t('invest.topUp', category, formatNumber(KEY_SPIKE), formatNumber(badge.topUp))}
-        </span>
-      </div>
-    );
-  };
-
-  /**
-   * The three 4,800 spikes in the build's order: souls in each category, the one to finish next and when players
-   * usually have that many (rank 81+ to rank 1-40). Amber only once the clock is past the slower median.
-   * Compact (overlay): the next one only, with a short pace line.
-   */
-  const renderInvestment = (compact = false) => {
-    const { categories, target, spikeNumber, pace, push } = investment;
-    if (!target || !pace) {
-      return (
-        <p className="text-small text-slate-400" title={t('invest.title')}>
-          {t('invest.allDone', formatNumber(KEY_SPIKE))}
-        </p>
-      );
-    }
-    // Past its window (SPIKES) a spike is not pushed any more, and its pace is no longer a warning;
-    // the third one is only worth a cheap top-up when the clock is unknown or late
-    const range = `${Math.round(pace.highRank)}–${Math.round(pace.lowRank)}`;
-    const late = String(Math.round(pace.lowRank));
-    const behind = push === 'full' && clockS !== undefined && clockS > pace.lowRank * 60;
-    const paceLine = push === 'off' ? (
-      <span className="text-slate-400">{compact ? t('invest.offShort', spikeNumber) : t('invest.off', spikeNumber)}</span>
-    ) : push === 'top-up' ? (
-      <span className="text-slate-400">
-        {compact ? t('invest.coreDoneShort', formatNumber(CHEAP_TOP_UP)) : t('invest.coreDone', formatNumber(CHEAP_TOP_UP))}
-      </span>
-    ) : behind ? (
-      <span className="font-bold text-amber-300">
-        {compact ? t('invest.behindShort', spikeNumber, late) : t('invest.behind', spikeNumber, late)}
-      </span>
-    ) : (
-      <span className="text-slate-400">
-        {compact ? t('invest.paceShort', spikeNumber, range) : t('invest.pace', spikeNumber, range)}
-      </span>
-    );
-    const segment = (c: (typeof categories)[number], index: number) => {
-      const { Icon, className } = SHOP_TABS[c.category];
-      const isTarget = c === target;
-      return (
-        <div key={c.category} className={`flex-1 min-w-0 space-y-1 ${isTarget || c.done ? '' : 'opacity-60'}`}>
-          <div className="flex items-center justify-between gap-1 text-small">
-            <span className={`flex items-center gap-1 font-bold ${className}`}>
-              {!compact && <span className="text-slate-500">{index + 1}</span>}
-              <Icon className="w-3 h-3 shrink-0" aria-hidden />
-              {t(`category.${c.category}`)}
-            </span>
-            <span className={`tabular-nums ${c.done ? 'font-bold text-slate-200' : 'text-slate-300'}`}>
-              {c.done ? `✓ ${formatNumber(c.souls)}` : `${formatNumber(c.souls)} / ${formatNumber(KEY_SPIKE)}`}
-            </span>
-          </div>
-          <div className={`h-1.5 rounded-full bg-white/10 overflow-hidden ${isTarget ? 'ring-1 ring-white/30' : ''}`}>
-            <div
-              className={`h-full rounded-full ${SPIKE_BAR[c.category]}`}
-              style={{ width: `${Math.min(100, (c.souls / KEY_SPIKE) * 100)}%` }}
-            />
-          </div>
-        </div>
-      );
-    };
-    if (compact) {
-      return (
-        <div className="space-y-1" title={t('invest.title')}>
-          {segment(target, categories.indexOf(target))}
-          <p className="text-small truncate">{paceLine}</p>
-        </div>
-      );
-    }
-    return (
-      <div className="space-y-1.5" title={t('invest.title')}>
-        <div className="flex items-baseline justify-between gap-2 flex-wrap text-small">
-          <span className="font-bold text-slate-200">{t('invest.label', formatNumber(KEY_SPIKE))}</span>
-          {paceLine}
-        </div>
-        <div className="flex gap-3">{categories.map(segment)}</div>
-      </div>
-    );
+    return badge ? <SpikeChip badge={badge} compact={compact} /> : null;
   };
 
   const stanceLabel = (alert: MatchupAlert) =>
@@ -1540,7 +1433,7 @@ export function App() {
                 <span className="text-small font-extrabold uppercase tracking-wider text-emerald-300 flex items-center gap-1">
                   <ShoppingCart className="w-3 h-3 text-emerald-400" /> {t('overlay.buyNow')}
                 </span>
-                {renderInvestment(true)}
+                <InvestmentLine investment={investment} clockS={clockS} compact />
                 {nextToBuyQueue.slice(0, 3).map((entry, idx) => {
                   const canAfford = currentSouls !== null && currentSouls >= entry.item.cost;
                   const shortName = entry.item.name.split('(')[0].trim();
@@ -2017,7 +1910,9 @@ export function App() {
                       </div>
                     </div>
 
-                    <div className="basis-full">{renderInvestment()}</div>
+                    <div className="basis-full">
+                      <InvestmentLine investment={investment} clockS={clockS} />
+                    </div>
 
                     {currentSouls !== null && (
                       <div className="px-3 py-1 rounded-xl bg-teal-950/80 border border-teal-400/50 text-body font-extrabold text-teal-200">
